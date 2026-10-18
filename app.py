@@ -16,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "alex_otp_secret_2025_v23_3")
 
-MONGO_URI = os.environ.get("MONGO_URI", "")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net")
 BG_REFRESH_INTERVAL = 60
 MESSAGE_CACHE_TTL = 10
 MAX_SMS_PER_NUMBER = 60
