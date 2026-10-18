@@ -1,0 +1,7 @@
+flask==3.0.3
+aiohttp==3.9.5
+redis==5.0.7
+flask
+pymongo
+dnspython
+requests
