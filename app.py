@@ -1,3 +1,4 @@
+
 from flask import Flask, request, jsonify, session, redirect, url_for, Response
 from functools import wraps
 from pymongo import MongoClient
@@ -15,7 +16,7 @@ from datetime import datetime, timezone, timedelta
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "alex_otp_secret_2025_v23_3")
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net/?retryWrites=true&w=majority")
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net")
 BG_REFRESH_INTERVAL = 60
 MESSAGE_CACHE_TTL = 10
 MAX_SMS_PER_NUMBER = 60
@@ -717,13 +718,13 @@ button{width:100%;margin-top:16px;padding:16px;border:none;border-radius:12px;ba
 button:active{transform:scale(.98)}
 .err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px}
 .lock{text-align:center;font-size:40px;margin-bottom:12px}</style></head><body>
-<form class="box" method="POST"><div class="lock">🔐</div><h1>SUPER MASTER ADMIN</h1>
-<p class="sub">Enter root password</p>
+<form class="box" method="POST"><div class="lock">🔐</div><h1>ADMIN PANEL</h1>
+<p class="sub">Enter admin password</p>
 <div class="pwd-wrap">
 <input type="password" id="pwd" name="password" placeholder="Admin Password" required autofocus>
 <span class="toggle-pwd" onclick="togglePwd(event)">👁️</span>
 </div>
-<button type="submit">Authenticate</button>__ERROR__</form>
+<button type="submit">Admin Login</button>__ERROR__</form>
 <script>
 function togglePwd(e){
   var i=document.getElementById('pwd');
@@ -2058,7 +2059,7 @@ setInterval(()=>{ if(myFirebases.length > 0 && !currentNum) loadNumbers(); }, 10
 # ✅ Admin version: Firebases count + Raw Data button
 ADMIN_DASHBOARD_HTML = USER_DASHBOARD_HTML.replace(
     '<div class="nav"><a href="/" class="nav-link active">📱 Numbers</a><a href="/otp" class="nav-link otp">🔐 Personal OTP</a></div>',
-    '<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link active">📱 Numbers</a><a href="/supermasteradmin/firebases" class="nav-link">🔥 Firebases</a><a href="/supermasteradmin/security" class="nav-link">🔒 Security</a></div>'
+    '<div class="nav"><a href="/admin/dashboard" class="nav-link active">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link">🔒 Security</a></div>'
 ).replace(
     'Alex</span> <span class="panel">OTP PANEL',
     'Alex</span> <span class="panel">ADMIN</span><span style="font-size:10px;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;padding:3px 8px;border-radius:8px;margin-left:6px;font-weight:700;vertical-align:middle">👑</span>'
@@ -2066,7 +2067,7 @@ ADMIN_DASHBOARD_HTML = USER_DASHBOARD_HTML.replace(
     '<div class="quick"><div class="info">📱 Numbers : <b id="q-dev">0</b></div></div>',
     '''<div class="quick">
       <div class="info">🔥 Firebases : <b id="q-fb">0</b> &nbsp;·&nbsp; 📱 Numbers : <b id="q-dev">0</b></div>
-      <a href="/supermasteradmin/firebases" style="padding:10px 16px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;text-decoration:none;border-radius:10px;font-size:12px;font-weight:600;min-height:44px;display:inline-flex;align-items:center">⚙️ Manage</a>
+      <a href="/firebases" style="padding:10px 16px;background:linear-gradient(135deg,#7c3aed,#a855f7);color:#fff;text-decoration:none;border-radius:10px;font-size:12px;font-weight:600;min-height:44px;display:inline-flex;align-items:center">⚙️ Manage</a>
     </div>'''
 ).replace(
     # ✅ Admin me Raw Data button add karo
@@ -2092,7 +2093,7 @@ function openInboxGlobal(idx){
 function openRawData(idx){
   if(idx < 0 || idx >= numbers.length) return;
   const n = numbers[idx];
-  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
   window.open(url, '_blank');
 }
 
@@ -2156,7 +2157,7 @@ body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
 <div class="topbar">
 <div class="brand"><span class="alex">Alex</span> SECURITY<span class="admin-badge">👑</span></div>
 <a href="/logout" class="logout-btn">Logout</a>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a><a href="/supermasteradmin/firebases" class="nav-link">🔥 Firebases</a><a href="/supermasteradmin/security" class="nav-link security active">🔒 Security</a></div>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link">🔥 Firebases</a><a href="/admin/security" class="nav-link security active">🔒 Security</a></div>
 </div>
 
 <div class="container">
@@ -2298,7 +2299,7 @@ button:active{transform:scale(.97)}
 <div class="topbar">
 <div class="brand"><span class="alex">Alex</span> FIREBASES<span class="admin-badge">👑</span></div>
 <div class="conn" id="conn-badge"><span class="dot"></span><span id="conn-text">...</span></div>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a><a href="/supermasteradmin/firebases" class="nav-link active">🔥 Firebases</a><a href="/supermasteradmin/security" class="nav-link security">🔒 Security</a></div>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link security">🔒 Security</a></div>
 </div>
 
 <div class="container">
@@ -2417,7 +2418,7 @@ function renderFirebases(){
   }).join('');
 }
 
-function openFirebase(id){ window.location.href = '/supermasteradmin/firebase/' + id; }
+function openFirebase(id){ window.location.href = '/firebase/' + id; }
 function toggleSelect(id){ if(selected.has(id)) selected.delete(id); else selected.add(id); renderFirebases(); updateSelectAll(); }
 function toggleSelectAll(){ if(selected.size === firebases.length) selected.clear(); else selected = new Set(firebases.map(f => f.id)); renderFirebases(); updateSelectAll(); }
 function updateSelectAll(){ const cb = document.getElementById('select-all-cb'); if(firebases.length > 0 && selected.size === firebases.length){ cb.classList.add('checked'); cb.textContent = '✓'; } else { cb.classList.remove('checked'); cb.textContent = ''; } }
@@ -2553,7 +2554,7 @@ body{background:#f7f8fc;color:#1e293b;min-height:100vh;padding:0 0 40px}
 
 <div class="topbar">
 <div class="brand"><span class="alex">Alex</span> — FIREBASE</div>
-<div class="nav"><a href="/supermasteradmin/dashboard" class="nav-link">📱 Numbers</a><a href="/supermasteradmin/firebases" class="nav-link active">🔥 Firebases</a><a href="/supermasteradmin/security" class="nav-link" style="background:#fef3c7;color:#92400e">🔒</a></div>
+<div class="nav"><a href="/admin/dashboard" class="nav-link">📱 Numbers</a><a href="/firebases" class="nav-link active">🔥 Firebases</a><a href="/admin/security" class="nav-link" style="background:#fef3c7;color:#92400e">🔒</a></div>
 </div>
 
 <div class="container">
@@ -2636,7 +2637,7 @@ function renderNumbers(){
     const titleCls = isUnknown ? 'unknown' : '';
     return `
       <div class="num-card">
-        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📶'}</div>
+        <div class="num-icon ${iconCls}" onclick="openInboxGlobal(${numbers.indexOf(n)})">${isUnknown ? '❓' : '📱'}</div>
         <div class="num-info" onclick="openInboxGlobal(${numbers.indexOf(n)})">
           <div class="num-title ${titleCls}">${escapeHtml(n.number)}</div>
           <div class="num-sub">
@@ -2656,7 +2657,7 @@ function renderNumbers(){
 function openRawData(idx){
   if(idx < 0 || idx >= numbers.length) return;
   const n = numbers[idx];
-  const url = '/supermasteradmin/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
+  const url = '/debug?fb=' + encodeURIComponent(n.firebase) + '&id=' + encodeURIComponent(n.device_id);
   window.open(url, '_blank');
 }
 
@@ -2818,7 +2819,7 @@ h1{font-size:15px;font-weight:700;color:#a5b4fc;margin-bottom:6px}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid #334155;border-top-color:#818cf8;border-radius:50%;animation:spin .8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}</style></head><body>
 <div class="wrap">
-<a href="/supermasteradmin/firebases" class="back">← Back</a>
+<a href="/firebases" class="back">← Back</a>
 <h1>🔍 Raw Data Explorer</h1>
 <div class="sub" id="sub">Loading...</div>
 <div class="summary" id="summary" style="display:none">Scanning...</div>
@@ -2869,7 +2870,7 @@ def login_page():
     return Response(LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
 
 
-@app.route("/supermasteradmin", methods=["GET", "POST"])
+@app.route("/admin", methods=["GET", "POST"])
 def admin_login_page():
     if session.get("logged_in") and session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
@@ -2901,31 +2902,31 @@ def personal_otp():
     return Response(PERSONAL_OTP_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/dashboard")
+@app.route("/admin/dashboard")
 @admin_required
 def admin_dashboard():
     return Response(ADMIN_DASHBOARD_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/security")
+@app.route("/admin/security")
 @admin_required
 def admin_security():
     return Response(SECURITY_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/firebases")
+@app.route("/firebases")
 @admin_required
 def firebases_page():
     return Response(FIREBASES_HTML, mimetype="text/html")
 
 
-@app.route("/supermasteradmin/firebase/<fb_id>")
+@app.route("/firebase/<fb_id>")
 @admin_required
 def firebase_view_page(fb_id):
     return Response(FIREBASE_VIEW_HTML.replace("{{FB_ID}}", fb_id), mimetype="text/html")
 
 
-@app.route("/supermasteradmin/debug")
+@app.route("/debug")
 @admin_required
 def debug_page():
     return Response(DEBUG_HTML, mimetype="text/html")
