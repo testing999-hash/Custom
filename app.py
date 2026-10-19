@@ -19,17 +19,13 @@ app = Flask(__name__)
 # ════════════════════════════════════════════════════════════
 IS_VERCEL = bool(os.environ.get("VERCEL"))
 
-_secret = os.environ.get("SECRET_KEY")
-if IS_VERCEL and not _secret:
-    raise RuntimeError("SECRET_KEY env var required on Vercel")
-app.secret_key = _secret or "toxicnet_dev_secret_v1"
+app.secret_key = os.environ.get("SECRET_KEY", "toxicnet_secure_secret_2025_v23_x")
 
-_fb_salt = os.environ.get("FB_HASH_SALT")
-if IS_VERCEL and not _fb_salt:
-    raise RuntimeError("FB_HASH_SALT env var required on Vercel")
-FB_HASH_SALT = _fb_salt or "toxicnet_dev_salt_v1"
+FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "toxicnet_fb_secure_salt_2025_v23_x")
 
-MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net")
+# MONGO URI LANGSUNG DIMASUKIN (Bisa ditimpa via env vars Vercel kalau mau)
+MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net/?retryWrites=true&w=majority")
+
 MESSAGE_CACHE_TTL = 10
 MAX_SMS_PER_NUMBER = 60
 FETCH_TIMEOUT = 10
