@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-TOXICNET X — Vercel Edition
-Merged backend (v23.3) + Toxic Network dark UI + SMS Sender + SMS Logs + Passwordless.
+TOXICNET X — Vercel Edition (SuperMasterAdmin Routes)
+Merged backend + Toxic Network dark UI + SMS Sender + SMS Logs + Passwordless.
 """
 
 from flask import Flask, request, jsonify, session, redirect, url_for, Response
@@ -23,7 +23,7 @@ app.secret_key = os.environ.get("SECRET_KEY", "toxicnet_secure_secret_2025_v23_x
 
 FB_HASH_SALT = os.environ.get("FB_HASH_SALT", "toxicnet_fb_secure_salt_2025_v23_x")
 
-# MONGO URI LANGSUNG DIMASUKIN (Bisa ditimpa via env vars Vercel kalau mau)
+# MONGO URI
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://gogo_db_user:4DfbHqcjpjg6TYb8@firebase.snn8z2u.mongodb.net/?retryWrites=true&w=majority")
 
 MESSAGE_CACHE_TTL = 10
@@ -902,7 +902,6 @@ a{-webkit-tap-highlight-color:transparent;text-decoration:none;color:inherit}
 .err{margin-top:14px;text-align:center;color:#ef4444;font-size:13px;font-weight:600}
 """
 
-
 # ════════════════════════════════════════════════════════════
 # LOGIN PAGES
 # ════════════════════════════════════════════════════════════
@@ -926,23 +925,22 @@ __ERROR__
 
 
 ADMIN_LOGIN_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>ToxicNet — Root</title>
+<html lang="en"><head><meta charset="UTF-8"><title>ToxicNet — SuperMasterAdmin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <style>""" + DARK_CSS + """</style></head><body>
 <div class="login-wrap"><form class="login-box admin" method="POST">
 <div class="logo"><span class="logo-icon">🔐</span></div>
-<h1>ROOT ACCESS</h1><p class="sub">Super Master Admin Panel</p>
+<h1>SUPER MASTER ADMIN</h1><p class="sub">Root Access Level 99</p>
 <div class="pwd-wrap">
 <input type="password" id="pwd" name="password" placeholder="Admin Key" required autofocus>
 <span class="toggle-pwd" onclick="tp(event)">👁</span>
 </div>
 <button type="submit">Authenticate</button>
 __ERROR__
-<div class="info">Protected · Level 99</div>
+<div class="info">Protected System</div>
 </form></div>
 <script>function tp(e){var i=document.getElementById('pwd');var t=e.target;if(i.type==='password'){i.type='text';t.textContent='🙈';}else{i.type='password';t.textContent='👁';}}</script>
 </body></html>"""
-
 
 # ════════════════════════════════════════════════════════════
 # USER DASHBOARD
@@ -1339,10 +1337,10 @@ setInterval(()=>{ if(!currentNum) loadNumbers(); }, 5000);
 
 
 # ════════════════════════════════════════════════════════════
-# ADMIN DASHBOARD (tabbed: Numbers / Firebases / Logs / Security)
+# ADMIN DASHBOARD
 # ════════════════════════════════════════════════════════════
 ADMIN_DASHBOARD_HTML = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>ToxicNet — ROOT</title>
+<html lang="en"><head><meta charset="UTF-8"><title>ToxicNet — SuperMasterAdmin</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <style>""" + DARK_CSS + """</style></head><body class="app">
 
@@ -1552,8 +1550,8 @@ async function loadAdminNumbers(){
   }catch(e){}
 }
 
-function openInbox(idx){ window.location.href = '/?open='+idx; }
-function openRaw(idx){ const n = allNumbers[idx]; if(!n) return; window.open('/debug?fb='+encodeURIComponent(n.firebase)+'&id='+encodeURIComponent(n.device_id),'_blank'); }
+function openInbox(idx){ window.location.href = '/supermasteradmin/dashboard?open='+idx; }
+function openRaw(idx){ const n = allNumbers[idx]; if(!n) return; window.open('/supermasteradmin/debug?fb='+encodeURIComponent(n.firebase)+'&id='+encodeURIComponent(n.device_id),'_blank'); }
 function quickSend(num){ toast('💬 Open user panel to send to '+num); }
 
 function manualRefresh(){
@@ -1599,7 +1597,7 @@ function renderFirebases(){
   }).join('');
 }
 
-function openFbView(id){ window.open('/firebase/'+id, '_blank'); }
+function openFbView(id){ window.open('/supermasteradmin/firebase/'+id, '_blank'); }
 function toggleSel(id){ if(selected.has(id)) selected.delete(id); else selected.add(id); renderFirebases(); }
 
 async function addFirebase(){
@@ -1751,7 +1749,7 @@ setInterval(()=>{ if(currentTab==='dash') loadAdminNumbers(); }, 5000);
 
 
 # ════════════════════════════════════════════════════════════
-# PERSONAL OTP (user firebase add)
+# PERSONAL OTP
 # ════════════════════════════════════════════════════════════
 PERSONAL_OTP_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Personal OTP</title>
@@ -1959,7 +1957,7 @@ FIREBASE_VIEW_HTML = """<!DOCTYPE html>
 
 <div class="topbar">
 <div class="brand">☣️ Fire<span>base</span></div>
-<a href="/admin/dashboard" class="nav-link">← Back</a>
+<a href="/supermasteradmin/firebases" class="nav-link">← Back</a>
 </div>
 
 <div class="container">
@@ -2028,7 +2026,7 @@ loadFirebase();
 
 
 # ════════════════════════════════════════════════════════════
-# DEBUG (raw explorer)
+# DEBUG
 # ════════════════════════════════════════════════════════════
 DEBUG_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Raw Data</title>
@@ -2040,7 +2038,7 @@ DEBUG_HTML = """<!DOCTYPE html>
 .status-empty{color:#f87171;font-weight:600;margin-bottom:6px}
 </style></head><body class="app">
 <div class="container">
-<a href="/admin/dashboard" class="nav-link">← Back</a>
+<a href="/supermasteradmin/firebases" class="nav-link">← Back</a>
 <h1 style="font-size:18px;font-weight:800;margin:14px 0">🔍 Raw Data Explorer</h1>
 <div style="font-size:12px;color:#94a3b8;margin-bottom:14px;word-break:break-all" id="sub">Loading...</div>
 <div id="summary" class="sec-card" style="display:none">Scanning...</div>
@@ -2077,7 +2075,7 @@ scan();
 
 
 # ════════════════════════════════════════════════════════════
-# ROUTES
+# ROUTES (UPDATED WITH SUPERMASTERADMIN)
 # ════════════════════════════════════════════════════════════
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
@@ -2101,7 +2099,7 @@ def login_page():
     return Response(LOGIN_HTML.replace("__ERROR__", error), mimetype="text/html")
 
 
-@app.route("/admin", methods=["GET", "POST"])
+@app.route("/supermasteradmin", methods=["GET", "POST"])
 def admin_login_page():
     if session.get("logged_in") and session.get("role") == "admin":
         return redirect(url_for("admin_dashboard"))
@@ -2134,31 +2132,31 @@ def personal_otp():
     return Response(PERSONAL_OTP_HTML, mimetype="text/html")
 
 
-@app.route("/admin/dashboard")
+@app.route("/supermasteradmin/dashboard")
 @admin_required
 def admin_dashboard():
     return Response(ADMIN_DASHBOARD_HTML, mimetype="text/html")
 
 
-@app.route("/admin/security")
+@app.route("/supermasteradmin/security")
 @admin_required
 def admin_security():
-    return redirect("/admin/dashboard#sec")
+    return redirect("/supermasteradmin/dashboard#sec")
 
 
-@app.route("/firebases")
+@app.route("/supermasteradmin/firebases")
 @admin_required
 def firebases_page():
-    return redirect("/admin/dashboard#fb")
+    return redirect("/supermasteradmin/dashboard#fb")
 
 
-@app.route("/firebase/<fb_id>")
+@app.route("/supermasteradmin/firebase/<fb_id>")
 @admin_required
 def firebase_view_page(fb_id):
     return Response(FIREBASE_VIEW_HTML.replace("{{FB_ID}}", fb_id), mimetype="text/html")
 
 
-@app.route("/debug")
+@app.route("/supermasteradmin/debug")
 @admin_required
 def debug_page():
     return Response(DEBUG_HTML, mimetype="text/html")
